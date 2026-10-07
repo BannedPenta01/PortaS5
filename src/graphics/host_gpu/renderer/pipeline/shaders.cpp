@@ -19,7 +19,10 @@
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <set>
 #include <span>
 #include <vector>
 
@@ -387,6 +390,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	multisampling.sampleShadingEnable  = static_params.sample_shading_enable ? VK_TRUE : VK_FALSE;
 	multisampling.rasterizationSamples = vulkan_sample_count(static_params.samples);
 	multisampling.minSampleShading     = 1.0f;
+	if (::std::getenv("KYTY_FPS_LOG") != nullptr) {
+		static ::std::set<::std::pair<uint32_t, bool>> seen_msaa;
+		if (seen_msaa.emplace(static_params.samples, static_params.sample_shading_enable).second) {
+			::std::printf("MSAA: samples=%u sample_shading=%d\n", static_params.samples,
+			               static_params.sample_shading_enable ? 1 : 0);
+			::std::fflush(stdout);
+		}
+	}
 
 	vk::PipelineColorBlendAttachmentState color_blend_attachment[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	for (uint32_t i = 0; i < rendering.color_count; i++) {
