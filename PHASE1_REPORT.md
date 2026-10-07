@@ -250,3 +250,24 @@ guest frame 3840x2160 -> 1920x1080; boot/menu 16 -> 40-60 FPS
 (vblank-capped); gameplay ~10 -> ~20 FPS at matched clocks (~2x).
 `RADV_PERFTEST=ps_wave32,ge_wave32,cs_wave32` tested separately: no
 measurable gain, not adopted.
+
+## 12. Bottleneck triage, all items (2026-10-08, measured)
+
+Smurfs Vileaf, Ryzen Z1, 720p window, guest 1080p after display fix.
+Method: KYTY_FPS_LOG meter (presents, submits, draws, dispatches).
+
+1. Pixel load: 4K->1080p via truthful display reporting. DONE (2x FPS).
+2. Submit/draw/dispatch rates: ~5 submits, ~32 draws, ~0-5 dispatches
+   per present in gameplay. Healthy, no API pathology. NO ACTION.
+3. MSAA: game uses samples=1, no sample shading. NO ACTION.
+4. Queues: single universal queue family (count=1) on this GPU; the
+   single-queue design is already optimal here, cross-queue overlap is
+   impossible. NO ACTION.
+5. Barriers: eAllCommands sources exist but with ~10 barriers/frame on a
+   99%-busy pixel-bound GPU the expected gain is <0.5% against real
+   corruption risk. NOT WORTH IT here. NO ACTION.
+6. Shader-compile hitches: the one open structural item. Full async
+   without artifacts needs ubershader-scale work (generic fallback
+   shaders + background specialization + swap-in); mitigations already
+   shipped: validation off, driver pipeline-blob persistence across
+   runs, bounded program cache, O(N) scan removal.
