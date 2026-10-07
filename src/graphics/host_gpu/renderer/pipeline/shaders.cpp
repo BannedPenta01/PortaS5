@@ -20,57 +20,10 @@
 
 #include <algorithm>
 #include <limits>
-#include <mutex>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
-#include <xxhash.h>
-
 namespace Libs::Graphics {
-
-// Fixed rect-list TCS/TES shaders are recompiled per pipeline without a cache;
-// the vertex/fragment input shape is the only input that changes. Cache the
-// generated SPIR-V modules keyed by their emitted bytecode so repeated
-// pipeline creation with the same interface shape reuses the modules.
-namespace {
-
-struct RectListModuleCacheEntry {
-	std::vector<uint32_t> control_spv;
-	std::vector<uint32_t> evaluation_spv;
-	vk::ShaderModule      control     = nullptr;
-	vk::ShaderModule      evaluation = nullptr;
-};
-
-std::unordered_map<uint64_t, RectListModuleCacheEntry> g_rectlist_module_cache;
-std::mutex                                             g_rectlist_module_cache_mutex;
-
-RectListModuleCacheEntry GetOrCreateRectListModules(vk::Device device,
-                                                    const RectListShaders& shaders) {
-	const uint64_t control_hash    = XXH3_64bits(shaders.control.data(),
-	                                             shaders.control.size() * sizeof(uint32_t));
-	const uint64_t evaluation_hash = XXH3_64bits(shaders.evaluation.data(),
-	                                             shaders.evaluation.size() * sizeof(uint32_t));
-	const uint64_t key             = control_hash ^ (evaluation_hash + 0x9E3779B97F4A7C15ull +
-	                                                 (control_hash << 6) + (control_hash >> 2));
-
-	std::lock_guard lock(g_rectlist_module_cache_mutex);
-	if (auto it = g_rectlist_module_cache.find(key); it != g_rectlist_module_cache.end() &&
-	    it->second.control_spv == shaders.control &&
-	    it->second.evaluation_spv == shaders.evaluation) {
-		return it->second;
-	}
-	RectListModuleCacheEntry entry;
-	entry.control_spv   = shaders.control;
-	entry.evaluation_spv = shaders.evaluation;
-	entry.control       = CompileSPV(entry.control_spv, device);
-	entry.evaluation    = CompileSPV(entry.evaluation_spv, device);
-	g_rectlist_module_cache[key] = entry;
-	return entry;
-}
-
-} // namespace
-
 
 // IDK: maybe we can remove it?
 constexpr uint8_t kTemporaryVertexAttribFormat113 =
@@ -281,12 +234,15 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (rect_list) {
 		const auto shaders =
 		    BuildRectListShaders(vs_input_info, ps_active ? ps_input_info : nullptr);
-		const auto rectlist_modules = GetOrCreateRectListModules(graphics.device, shaders);
-		tess_control_shader_module   = rectlist_modules.control;
-		tess_eval_shader_module      = rectlist_modules.evaluation;
+		tess_control_shader_module = CompileSPV(shaders.control, graphics.device);
 		if (graphics_debug_dump_enabled()) {
-			LOGF("PipelineTrace: rect-list TCS/TES reuse module=%p/%p\n",
-			     static_cast<void*>(tess_control_shader_module),
+			LOGF("PipelineTrace: vkCreateShaderModule RectList TCS done module=%p\n",
+			     static_cast<void*>(tess_control_shader_module));
+		}
+
+		tess_eval_shader_module = CompileSPV(shaders.evaluation, graphics.device);
+		if (graphics_debug_dump_enabled()) {
+			LOGF("PipelineTrace: vkCreateShaderModule RectList TES done module=%p\n",
 			     static_cast<void*>(tess_eval_shader_module));
 		}
 	}

@@ -28,6 +28,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+#include <dlfcn.h>
+#endif
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 #include <memory>
@@ -689,6 +692,20 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		}
 		std::printf("--- Guest fault context ---\n");
 		std::printf("thread: %s\n", thread_name);
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+		{
+			Dl_info dlinfo {};
+			if (::dladdr(reinterpret_cast<const void*>(info->exception_address), &dlinfo) != 0) {
+				const auto base = reinterpret_cast<uintptr_t>(dlinfo.dli_fbase);
+				std::printf("module: %s + 0x%lx (%s)\n",
+				            dlinfo.dli_fname != nullptr ? dlinfo.dli_fname : "?",
+				            static_cast<unsigned long>(info->exception_address - base),
+				            dlinfo.dli_sname != nullptr ? dlinfo.dli_sname : "?");
+			} else {
+				std::printf("module: <unknown>\n");
+			}
+		}
+#endif
 		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
 		            "rsi=%016" PRIx64 " rdi=%016" PRIx64 " rbp=%016" PRIx64 " rsp=%016" PRIx64 "\n"
 		            "r8 =%016" PRIx64 " r9 =%016" PRIx64 " r10=%016" PRIx64 " r11=%016" PRIx64 "\n"
