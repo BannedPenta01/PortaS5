@@ -231,3 +231,22 @@ shaders. Verified with a 60 s Smurfs boot: 0 host exceptions, 295
 shader phases, clean `Event: quit` exit. The LRU program-cache bound
 was confirmed innocent for this crash (176 programs < 512 cap, eviction
 never fired) and stays in place.
+
+## 11. Emulated display resolution (2026-10-08, measured win)
+
+Finding: the emulator hard-reported a 4K display to every game
+(`VideoOutGetOutputStatus` -> 2u), so UE4 Smurfs sized its backbuffer at
+3840x2160 (8.3M px/frame) even in a 1280x720 window. FPS scaled linearly
+with GPU clocks (10 @ 1.36GHz -> 21 @ 2.3GHz): purely pixel-bound.
+
+Fix (no render-target hacking, no quality lies): report the display the
+emulator actually has. New `--display-resolution <Auto|HD|FullHD|UltraHD>`
+(default Auto = legacy 4K report; under the handheld profile with a
+sub-4K window, Auto reports HD — exactly what a real PS5 on a 720p/1080p
+TV reports, and games adapt natively).
+
+Measured on Smurfs Vileaf (Ryzen Z1, 720p window):
+guest frame 3840x2160 -> 1920x1080; boot/menu 16 -> 40-60 FPS
+(vblank-capped); gameplay ~10 -> ~20 FPS at matched clocks (~2x).
+`RADV_PERFTEST=ps_wave32,ge_wave32,cs_wave32` tested separately: no
+measurable gain, not adopted.
