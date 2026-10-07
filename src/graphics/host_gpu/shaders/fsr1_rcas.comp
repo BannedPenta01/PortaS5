@@ -1,0 +1,35 @@
+// FSR 1 (MIT, AMD) robust contrast-adaptive sharpening wrapper.
+// Sharpness constant is computed on the CPU with FsrRcasCon() (stops value
+// packed by the same function) and passed as a push constant.
+#version 450
+
+#extension GL_GOOGLE_include_directive : require
+
+#define A_GPU 1
+#define A_GLSL 1
+#define FSR_RCAS_F 1
+
+#include "ffx_a.h"
+#include "ffx_fsr1.h"
+
+layout(set = 0, binding = 0) uniform sampler2D u_input;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D u_output;
+
+layout(push_constant) uniform PushConstants {
+	uvec4 con;
+} u_consts;
+
+AF4 FsrRcasLoadF(ASU2 p) {
+	return texelFetch(u_input, p, 0);
+}
+
+void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {
+}
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+void main() {
+	AU2 gxy = AU2(gl_GlobalInvocationID.xy);
+	AF1 r, g, b;
+	FsrRcasF(r, g, b, gxy, u_consts.con);
+	imageStore(u_output, ivec2(gxy), vec4(r, g, b, 1.0));
+}

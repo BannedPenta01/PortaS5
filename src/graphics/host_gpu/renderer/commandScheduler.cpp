@@ -10,6 +10,8 @@
 namespace Libs::Graphics {
 
 ::std::atomic<uint64_t> g_vk_submit_count {0};
+::std::atomic<uint64_t> g_vk_draw_count {0};
+::std::atomic<uint64_t> g_vk_dispatch_count {0};
 
 static thread_local CommandScheduler* g_deferred_callback_scheduler = nullptr;
 

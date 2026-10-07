@@ -16,8 +16,10 @@
 
 namespace Libs::Graphics {
 
-// Submit counter for lightweight profiling (read by the swapchain FPS meter).
+// Submit/draw/dispatch counters for lightweight profiling (read by the swapchain FPS meter).
 extern ::std::atomic<uint64_t> g_vk_submit_count;
+extern ::std::atomic<uint64_t> g_vk_draw_count;
+extern ::std::atomic<uint64_t> g_vk_dispatch_count;
 
 class CommandScheduler {
 public:

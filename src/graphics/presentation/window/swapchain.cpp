@@ -862,9 +862,14 @@ void FpsMeterTick() {
 		const double   p95     = sorted[sorted.size() * 95 / 100];
 		const uint64_t submits =
 		    Libs::Graphics::g_vk_submit_count.exchange(0, ::std::memory_order_relaxed);
-		::std::printf("FPS: avg=%.1f p95_frame=%.1fms presents=%zu submits=%llu (%.1f/present)\n",
+		const uint64_t draws =
+		    Libs::Graphics::g_vk_draw_count.exchange(0, ::std::memory_order_relaxed);
+		const uint64_t dispatches =
+		    Libs::Graphics::g_vk_dispatch_count.exchange(0, ::std::memory_order_relaxed);
+		::std::printf("FPS: avg=%.1f p95_frame=%.1fms presents=%zu submits=%llu draws=%llu "
+		               "dispatch=%llu\n",
 		               1000.0 / avg, p95, sorted.size(), (unsigned long long)submits,
-		               (double)submits / (double)sorted.size());
+		               (unsigned long long)draws, (unsigned long long)dispatches);
 		::std::fflush(stdout);
 		deltas.clear();
 	}

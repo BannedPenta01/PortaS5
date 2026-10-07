@@ -297,6 +297,35 @@ add_custom_command(
 list(APPEND kyty_emulator_src "${fault_buffer_shader_header}")
 list(APPEND kyty_emulator_src ${gpu_tiler_shader_headers})
 
+# FSR 1 (MIT, AMD) spatial upscaler + RCAS sharpening for the presentation
+# path. Compiled with the FSR headers on the include path.
+set(fsr1_shader_dir "${KYTY_SOURCE_DIR}/graphics/host_gpu/shaders")
+set(fsr1_generated_dir "${PROJECT_BINARY_DIR}/fsr1_shaders")
+set(fsr1_shader_names
+	fsr1_easu
+	fsr1_rcas
+)
+foreach(shader_name IN LISTS fsr1_shader_names)
+	set(shader_source "${fsr1_shader_dir}/${shader_name}.comp")
+	set(shader_spv "${fsr1_generated_dir}/${shader_name}.spv")
+	set(shader_header "${fsr1_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr1_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+		        "-I${KYTY_THIRD_PARTY_DIR}/fsr1" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}"
+		        "${KYTY_THIRD_PARTY_DIR}/fsr1/ffx_a.h"
+		        "${KYTY_THIRD_PARTY_DIR}/fsr1/ffx_fsr1.h"
+		VERBATIM
+	)
+	list(APPEND fsr1_shader_headers "${shader_header}")
+endforeach()
+list(APPEND kyty_emulator_src ${fsr1_shader_headers})
+
 set(gpu_blit_generated_dir "${PROJECT_BINARY_DIR}/gpu_blit_shaders")
 set(gpu_blit_shader_sources
 	"${gpu_tiler_shader_dir}/gpu_blit_fs_triangle.vert"
