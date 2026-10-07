@@ -65,6 +65,11 @@ static void PrintUsage() {
 	::printf("  --controller-vibration <0-100>      DualSense vibration intensity. Default: 100.\n");
 	::printf(
 	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Mailbox.\n");
+	::printf("  --display-resolution <value>         Auto, HD, FullHD, or UltraHD. Default: Auto.\n"
+	         "                                       Resolution reported to the game; handheld Auto\n"
+	         "                                       reports HD for sub-4K windows (like a real PS5\n"
+	         "                                       on a 720p/1080p TV) so games size backbuffers\n"
+	         "                                       accordingly instead of always using 4K.\n");
 	::printf(
 	    "  --performance-profile <value>        Auto, Handheld, Desktop, or Off. Default: Auto.\n");
 	::printf(
@@ -364,6 +369,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--present-mode") {
 			if (!ParseEnum(value, options.config.present_mode)) {
 				::printf("invalid present mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--display-resolution") {
+			if (!ParseEnum(value, options.config.display_resolution)) {
+				::printf("invalid display resolution: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--gpu") {

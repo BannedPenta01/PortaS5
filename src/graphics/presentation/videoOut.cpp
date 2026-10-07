@@ -1797,9 +1797,28 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	int32_t attribute3 = 0;
 	Loader::SystemContentParamSfoGetInt("ATTRIBUTE3", &attribute3);
 	ctx->mutex.Lock();
-	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
-	status->resolution =
-	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
+	// Primary output reports 4K unless the emulated display is smaller: a real
+	// PS5 connected to a sub-4K TV reports HD, and games size their backbuffers
+	// from that instead of always targeting 3840x2160. Explicit
+	// --display-resolution values always win; Auto keeps the legacy 4K report
+	// except on handheld profiles with a sub-4K window.
+	uint32_t reported = 2u;
+	switch (Config::GetDisplayResolution()) {
+		case Config::DisplayResolution::HD:
+		case Config::DisplayResolution::FullHD: reported = 1u; break;
+		case Config::DisplayResolution::UltraHD: reported = 2u; break;
+		case Config::DisplayResolution::Auto:
+		default:
+			if (Config::IsHandheldProfile() && (ctx->width < 3840 || ctx->height < 2160)) {
+				reported = 1u;
+			} else {
+				reported = ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160
+				                ? 1u
+				                : 2u);
+			}
+			break;
+	}
+	status->resolution = reported;
 	status->dynamicRange = 1;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119

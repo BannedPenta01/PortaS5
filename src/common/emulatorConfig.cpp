@@ -64,6 +64,10 @@ PresentMode GetPresentMode() {
 	return g_config->present_mode;
 }
 
+DisplayResolution GetDisplayResolution() {
+	return g_config->display_resolution;
+}
+
 int32_t GetGpuIndex() {
 	return g_config->gpu_index;
 }
