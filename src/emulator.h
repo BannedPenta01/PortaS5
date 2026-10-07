@@ -15,6 +15,7 @@ struct RunOptions {
 	std::filesystem::path game_patch;
 	std::filesystem::path install_pup;
 	std::filesystem::path install_pup_output;
+	std::filesystem::path firmware_info;
 };
 
 void Run(const RunOptions& options);

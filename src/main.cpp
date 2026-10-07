@@ -13,6 +13,7 @@
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string_view>
 #include <vector>
 #include <fmt/format.h>
@@ -47,6 +48,7 @@ static void PrintUsage() {
 	::printf("Options:\n");
 	::printf("  --install-pup <file>                Unpack a decrypted PS5UPDATE.PUP into a structured firmware layout.\n");
 	::printf("  --pup-output <dir>                  Output dir for --install-pup (default: firmware).\n");
+	::printf("  --firmware-info <dir>               Show an inventory of an installed firmware layout.\n");
 	::printf("Supported firmware install source: a previously-decrypted PS5UPDATE.PUP / PS5UPDATE*.PUP.dec.\n");
 	::printf("Raw/encrypted PS5UPDATE.PUP files cannot be installed by this build exactly (no on-device keys).\n");
 	::printf("Note: this build do not emulate the PS5 OS/Dashboard; installing firmware unpacks its files for tooling.\n");
@@ -444,6 +446,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.printf_output_file = Common::PathFromUtf8(value);
 		} else if (arg == "--install-pup") {
 			options.install_pup = Common::PathFromUtf8(value);
+		} else if (arg == "--firmware-info") {
+			options.firmware_info = Common::PathFromUtf8(value);
 		} else if (arg == "--pup-output") {
 			options.install_pup_output = Common::PathFromUtf8(value);
 		} else if (arg == "--spirv-debug-printf") {
@@ -488,7 +492,66 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		options.config.vulkan_validation_enabled = true;
 	}
 
-	return show_help || (!options.app0_dir.empty() && !options.elf.empty()) || !options.install_pup.empty();
+	return show_help || (!options.app0_dir.empty() && !options.elf.empty()) || !options.install_pup.empty() || !options.firmware_info.empty();
+}
+
+static std::string ReadWholeFile(const std::filesystem::path& path) {
+	std::string content;
+	if (std::ifstream in {path, std::ios::binary}) {
+		content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	}
+	return content;
+}
+
+static std::string FirmwareVersion(const std::filesystem::path& dir) {
+	for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+		const auto name = entry.path().filename().string();
+		if (name.size() >= 16 &&
+		    name.compare(name.size() - 16, 16, "version_name.xml") == 0) {
+			const auto xml   = ReadWholeFile(entry.path());
+			const auto begin = xml.find("<prefix_version>");
+			const auto end   = xml.find("</prefix_version>");
+			if (begin != std::string::npos && end != std::string::npos && end > begin) {
+				return xml.substr(begin + 16, end - begin - 16);
+			}
+		}
+	}
+	return {};
+}
+
+static int ShowFirmwareInfo(const std::filesystem::path& dir) {
+	std::error_code ec;
+	if (!std::filesystem::is_directory(dir, ec)) {
+		::printf("firmware-info: not a directory: %s\n", dir.c_str());
+		return 1;
+	}
+	const auto version = FirmwareVersion(dir);
+	::printf("firmware: %s\n", dir.c_str());
+	::printf("  version: %s\n", version.empty() ? "<unknown>" : version.c_str());
+	uint64_t total_bytes = 0;
+	size_t   files       = 0;
+	for (const auto& entry :
+	     std::filesystem::recursive_directory_iterator(dir, ec)) {
+		if (entry.is_regular_file(ec)) {
+			files++;
+			total_bytes += entry.file_size(ec);
+		}
+	}
+	::printf("  files: %zu (%.1f MB)\n", files, (double)total_bytes / (1024.0 * 1024.0));
+	bool has_encrypted_system = false;
+	for (const auto& entry : std::filesystem::directory_iterator(dir / "dev", ec)) {
+		const auto name = entry.path().filename().string();
+		if (name.find("system") != std::string::npos) {
+			has_encrypted_system = true;
+			::printf("  %s: %.1f MB (still encrypted, not mountable without console keys)\n",
+			         name.c_str(), (double)entry.file_size(ec) / (1024.0 * 1024.0));
+		}
+	}
+	if (!has_encrypted_system) {
+		::printf("  note: no encrypted system images present\n");
+	}
+	::printf("  note: this inventory does not boot the PS5 OS; KytyPS5 runs game ELFs, not system software\n");
+	return 0;
 }
 
 static int Main(int argc, char* argv[]) {
@@ -524,6 +587,10 @@ static int Main(int argc, char* argv[]) {
 		pup->ExtractAllEntries(output.string());
 		::printf("install-pup: unpacked to %s\n", output.c_str());
 		return 0;
+	}
+
+	if (!options.firmware_info.empty()) {
+		return ShowFirmwareInfo(options.firmware_info);
 	}
 
 	Run(options);
