@@ -8,6 +8,7 @@
 #include "common/virtualMemory.h"
 #include "emulator.h"
 #include "kytyGitVersion.h"
+#include "loader/PUP.h"
 
 #include <charconv>
 #include <cstdio>
@@ -44,6 +45,12 @@ static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
 	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
 	::printf("Options:\n");
+	::printf("  --install-pup <file>                Unpack a decrypted PS5UPDATE.PUP into a structured firmware layout.\n");
+	::printf("  --pup-output <dir>                  Output dir for --install-pup (default: firmware).\n");
+	::printf("Supported firmware install source: a previously-decrypted PS5UPDATE.PUP / PS5UPDATE*.PUP.dec.\n");
+	::printf("Raw/encrypted PS5UPDATE.PUP files cannot be installed by this build exactly (no on-device keys).\n");
+	::printf("Note: this build do not emulate the PS5 OS/Dashboard; installing firmware unpacks its files for tooling.\n");
+	::printf("Options continued:\n");
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
@@ -425,6 +432,10 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			}
 		} else if (arg == "--printf-output-file") {
 			options.config.printf_output_file = Common::PathFromUtf8(value);
+		} else if (arg == "--install-pup") {
+			options.install_pup = Common::PathFromUtf8(value);
+		} else if (arg == "--pup-output") {
+			options.install_pup_output = Common::PathFromUtf8(value);
 		} else if (arg == "--spirv-debug-printf") {
 			if (!ParseBool(value, options.config.spirv_debug_printf_enabled)) {
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
@@ -467,7 +478,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		options.config.vulkan_validation_enabled = true;
 	}
 
-	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
+	return show_help || (!options.app0_dir.empty() && !options.elf.empty()) || !options.install_pup.empty();
 }
 
 static int Main(int argc, char* argv[]) {
@@ -489,6 +500,19 @@ static int Main(int argc, char* argv[]) {
 
 	if (show_help) {
 		PrintUsage();
+		return 0;
+	}
+
+	if (!options.install_pup.empty()) {
+		const auto output = options.install_pup_output.empty() ? std::filesystem::path("firmware") : options.install_pup_output;
+		std::unique_ptr<CPUP> pup;
+		if (!CPUP::TryLoad(options.install_pup.string(), pup)) {
+			::printf("install-pup: not a valid/decrypted PS5 PUP container: %s\n",
+			         options.install_pup.c_str());
+			return 1;
+		}
+		pup->ExtractAllEntries(output.string());
+		::printf("install-pup: unpacked to %s\n", output.c_str());
 		return 0;
 	}
 

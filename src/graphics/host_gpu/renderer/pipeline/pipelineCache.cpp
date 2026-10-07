@@ -252,6 +252,48 @@ struct PipelineCache::ProgramCache {
 
 	static constexpr std::size_t MaxStaticKeyWords = 32 + ShaderVertexInputInfo::RES_MAX * 6;
 
+	// Bound the program cache so long sessions do not accumulate shader
+	// modules indefinitely on limited-memory shared-GPU systems.
+	std::size_t MaxPrograms() const {
+		switch (Config::GetRamTier()) {
+		case Config::RamTier::Tier8GB:
+			return 256;
+		case Config::RamTier::Tier16GB:
+			return 512;
+		case Config::RamTier::Tier24GBPlus:
+		case Config::RamTier::Unknown:
+		default:
+			return 1024;
+		}
+	}
+
+	std::unordered_map<ProgramKey, uint64_t, ProgramKeyHash> lru;
+	uint64_t                                                 lru_stamp = 0;
+
+	void TouchLru(const ProgramKey& key) {
+		if (auto it = lru.find(key); it != lru.end()) {
+			it->second = ++lru_stamp;
+		} else {
+			lru[key] = ++lru_stamp;
+		}
+		while (programs.size() > MaxPrograms() && !lru.empty()) {
+			auto oldest = lru.begin();
+			for (auto it = lru.begin(); it != lru.end(); ++it) {
+				if (it->second < oldest->second) {
+					oldest = it;
+				}
+			}
+			const ProgramKey evict_key = oldest->first;
+			lru.erase(oldest);
+			if (auto evict = programs.find(evict_key); evict != programs.end()) {
+				for (const auto& permutation : evict->second.permutations) {
+					device.destroyShaderModule(permutation.handle.module, nullptr);
+				}
+				programs.erase(evict);
+			}
+		}
+	}
+
 	Permutation CompilePermutation(const char*                                  stage_name,
 	                               const ShaderRecompiler::CompileOptions&      options,
 	                               ShaderRecompiler::TranslateResult            translated,
@@ -299,6 +341,9 @@ struct PipelineCache::ProgramCache {
 		lookup_key.code_size       = static_cast<uint32_t>(params.code.size());
 		BuildStageStaticKey(input_info, lookup_key.static_state);
 		auto                                         entry = programs.find(lookup_key);
+		if (entry != programs.end()) {
+			TouchLru(lookup_key);
+		}
 		ShaderRecompiler::IR::SrtRuntime             runtime {
 		    .user_data                  = user_data,
 		    .shader_base                = params.Base(),
@@ -376,6 +421,7 @@ struct PipelineCache::ProgramCache {
 			    entry->second.resource_plan, runtime, entry->second.resources,
 			    entry->second.specialization));
 		}
+		TouchLru(lookup_key);
 		entry->second.permutations.push_back(CompilePermutation(
 		    stage_name, options, std::move(translated), entry->second.specialization, push_data_cursor));
 		const auto& permutation = entry->second.permutations.back();

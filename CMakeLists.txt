@@ -332,7 +332,7 @@ if (KYTY_CLANG_CL)
 	set_source_files_properties(${kyty_emulator_src} PROPERTIES COMPILE_FLAGS "-Wno-pragma-pack -Wno-deprecated-declarations -D_TIMESPEC_DEFINED")
 endif()
 
-set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus)
+set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus zlibstatic)
 
 # Linux system libraries.
 if(LINUX)
@@ -350,6 +350,7 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/cpuinfo/include
 	${KYTY_THIRD_PARTY_DIR}/renderdoc
 	${KYTY_THIRD_PARTY_DIR}/stb
+	${KYTY_THIRD_PARTY_DIR}/extern-zstr/src
 )
 
 if (KYTY_CLANG_CL)
@@ -733,6 +734,7 @@ endif()
 
 add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
 configure_macos_guest_address_space(kyty_emulator)
+set_source_files_properties("${KYTY_SOURCE_DIR}/loader/PUP.cpp" PROPERTIES COMPILE_OPTIONS "-fexceptions")
 
 set(KYTY_TROPHY_UNLOCK_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/sounds/trophy-unlock.wav")
 add_custom_target(kyty_trophy_sound

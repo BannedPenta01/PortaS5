@@ -1,6 +1,8 @@
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(cpuinfo)
+add_subdirectory(zlib-1.2.8)
+target_compile_options(zlibstatic PRIVATE -Wno-implicit-function-declaration -Wno-deprecated-non-prototype -Wno-unused-but-set-variable -w)
 
 include(FetchContent)
 

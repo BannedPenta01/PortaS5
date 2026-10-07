@@ -163,3 +163,43 @@ New files:
 Verified on this host: `Performance profile: mode=Handheld detected=[apu=1
 handheld=1 ram=2] threads=12` (Tier16GB from 11 GiB RAM). Default remains
 `Auto`, so existing scripts behave the same but now adapt on AMD APUs.
+
+## 8. Phase 3 — Shader/pipeline performance (implemented subset)
+
+- Rect-list fixed-function TCS/TES shaders are now compiled and cached by
+  emitted SPIR-V bytecode (`GetOrCreateRectListModules`, shaders.cpp)
+  instead of recompiling both modules on every rect-list pipeline build.
+- Removed the per-compile O(#programs) full-map walk and unconditional
+  `std::printf` shader counter (pipelineCache.cpp), which ran on every
+  new shader and was quadratic + spammy.
+- Shipped configuration corrected: `shader_validation_enabled=false` in
+  Kyty.ini and `--shader-validation false` in kyty_run.sh (validation
+  was enabled by default in the bundled runtime profile, forcing
+  `spvtools` validation + two `SpirvTools` instances per new shader).
+- Enabled the on-disk `vk::PipelineCache` blob for this build by
+  committing the source tree (previously "Vulkan pipeline cache:
+  disabled (unknown git revision)") — saves `_PipelineCache/<TITLE_ID>.bin`
+  on clean exit, which bypasses most driver pipeline compiles on
+  subsequent launches.
+
+## 9. Decrypted PS5UPDATE.PUP installer scaffolding
+
+- Integrated an in-tree PS5 PUP container unpacker (zecoxao's
+  `ps5-pup-unpacker`, C++17, standalone CMake) under
+  `src/loader/PUP.cpp`/`PUP.h`/`BinaryReader.h`/`Entry.h`/`BlockInfo.h`.
+- `--install-pup <file> [--pup-output <dir>]` validates the container
+  magic and entry table, then unpacks into a structured tree rooted at
+  the output dir (`eula.xml`, `kernel.bin`, `tables/*_for_*.img`,
+  `dev/ssd0.system*` for the pieces like preinst, etc.).
+- Replaces exceptions with `TryLoad`/`return false` surface for the
+  project's -fno-exceptions config; raw/encrypted shipping PUPs and
+  ote-Exception failures produce a clean "not a valid/decrypted PS5 PUP"
+  error instead of terminating.
+- **It does not boot the Horizon Dashboard.** KytyPS5 remains a game
+  compatibility layer—the real PS5 OS/Dashboard/kernel is not emulated.
+  This is scaffolding to let us wire up a real game content+archive path
+  later; users need a decrypted `PS5UPDATE.PUP.dec` from their own
+  PS5 before unpacking works.
+
+Smoke-tested: the bootable title still runs on AMD Ryzen Z1
+(RADV PHOENIX2), 60 s run, no regressions from the rect-list path.
