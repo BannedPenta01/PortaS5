@@ -203,3 +203,31 @@ handheld=1 ram=2] threads=12` (Tier16GB from 11 GiB RAM). Default remains
 
 Smoke-tested: the bootable title still runs on AMD Ryzen Z1
 (RADV PHOENIX2), 60 s run, no regressions from the rect-list path.
+
+## 10. Boot-crash debug (2026-10-08, fixed)
+
+Symptom: fork build crashed booting PPSA02876 (Smurfs) with
+`Unhandled host exception: ... pc=0x... address=0x0` after ~10 shader
+compiles, while the upstream prebuilt passed 345+ shaders in the same
+window. kyty.log staleness initially masked which binary was running.
+
+Diagnosis: added temporary `dladdr()` crash-module logging to
+`KytyExceptionHandler` (kept — crash path only, no perf impact). It
+reported `module: /usr/lib/libvulkan_radeon.so + 0x1dd66e`, i.e. a
+null-deref inside the RADV driver, not emulator code — the fork was
+feeding the driver a dead `VkShaderModule`.
+
+Root cause: the Phase-3 rect-list TCS/TES module cache. Upstream
+`CreatePipelineInternal` (shaders.cpp) destroys the rect-list modules
+right after `vkCreateGraphicsPipelines` (legal — the pipeline retains
+compiled state). The global cache then returned those destroyed handles
+on the next rect-list pipeline build → driver use-after-free. Any
+module cache must be scoped to device lifetime AND exempt cached
+modules from the post-build destroy; a process-global cache does
+neither.
+
+Fix: reverted to upstream per-build compile+destroy for rect-list
+shaders. Verified with a 60 s Smurfs boot: 0 host exceptions, 295
+shader phases, clean `Event: quit` exit. The LRU program-cache bound
+was confirmed innocent for this crash (176 programs < 512 cap, eviction
+never fired) and stays in place.
