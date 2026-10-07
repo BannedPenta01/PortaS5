@@ -17,6 +17,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -831,6 +834,44 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 	return scheduler.Submit(submit);
 }
 
+namespace {
+
+// Lightweight present-rate meter for handheld profiling. Enabled with
+// KYTY_FPS_LOG=1. Prints average FPS and p95 frame time every 120 presents
+// to stdout. Zero overhead when the env var is unset.
+void FpsMeterTick() {
+	static bool        enabled = ::std::getenv("KYTY_FPS_LOG") != nullptr;
+	if (!enabled) {
+		return;
+	}
+	static auto                        start = ::std::chrono::steady_clock::now();
+	static ::std::vector<double>       deltas;
+	static ::std::chrono::steady_clock::time_point last = start;
+	const auto                         now = ::std::chrono::steady_clock::now();
+	deltas.push_back(
+	    ::std::chrono::duration<double, ::std::milli>(now - last).count());
+	last = now;
+	if (deltas.size() >= 120) {
+		::std::vector<double> sorted = deltas;
+		::std::sort(sorted.begin(), sorted.end());
+		double sum = 0;
+		for (double d : sorted) {
+			sum += d;
+		}
+		const double   avg     = sum / sorted.size();
+		const double   p95     = sorted[sorted.size() * 95 / 100];
+		const uint64_t submits =
+		    Libs::Graphics::g_vk_submit_count.exchange(0, ::std::memory_order_relaxed);
+		::std::printf("FPS: avg=%.1f p95_frame=%.1fms presents=%zu submits=%llu (%.1f/present)\n",
+		               1000.0 / avg, p95, sorted.size(), (unsigned long long)submits,
+		               (double)submits / (double)sorted.size());
+		::std::fflush(stdout);
+		deltas.clear();
+	}
+}
+
+} // namespace
+
 Swapchain::Status Swapchain::Present() {
 	EXIT_IF(m_image_index >= m_render_complete.size());
 	const auto         ready = m_render_complete[m_image_index];
@@ -861,6 +902,7 @@ Swapchain::Status Swapchain::Present() {
 		default: EXIT("vkQueuePresentKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
+	FpsMeterTick();
 	return Status::Success;
 }
 
@@ -880,6 +922,19 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	auto&             image = m_impl->ResolveSurface(info);
+	if (::std::getenv("KYTY_FPS_LOG") != nullptr) {
+		static uint32_t last_w = 0, last_h = 0, last_bw = 0, last_bh = 0;
+		if (info.extent.width != last_w || info.extent.height != last_h ||
+		    image.backing.extent.width != last_bw || image.backing.extent.height != last_bh) {
+			last_w  = info.extent.width;
+			last_h  = info.extent.height;
+			last_bw = image.backing.extent.width;
+			last_bh = image.backing.extent.height;
+			::std::printf("FRAME: guest=%ux%u backing=%ux%u fmt=%d\n", last_w, last_h, last_bw,
+			               last_bh, static_cast<int>(frame_format));
+			::std::fflush(stdout);
+		}
+	}
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}

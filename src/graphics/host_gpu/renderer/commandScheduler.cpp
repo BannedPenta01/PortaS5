@@ -7,8 +7,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <optional>
-
 namespace Libs::Graphics {
+
+::std::atomic<uint64_t> g_vk_submit_count {0};
 
 static thread_local CommandScheduler* g_deferred_callback_scheduler = nullptr;
 
@@ -342,6 +343,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
+	g_vk_submit_count.fetch_add(1, ::std::memory_order_relaxed);
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;

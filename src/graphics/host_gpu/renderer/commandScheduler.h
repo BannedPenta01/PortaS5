@@ -7,14 +7,17 @@
 #include "graphics/host_gpu/renderer/render.h"
 
 #include <condition_variable>
+#include <atomic>
 #include <mutex>
-
 #include <queue>
 
 #include <thread>
 #include <vector>
 
 namespace Libs::Graphics {
+
+// Submit counter for lightweight profiling (read by the swapchain FPS meter).
+extern ::std::atomic<uint64_t> g_vk_submit_count;
 
 class CommandScheduler {
 public:
