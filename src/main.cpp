@@ -72,6 +72,11 @@ static void PrintUsage() {
 	         "                                       reports HD for sub-4K windows (like a real PS5\n"
 	         "                                       on a 720p/1080p TV) so games size backbuffers\n"
 	         "                                       accordingly instead of always using 4K.\n");
+	::printf("  --upscaler <value>                   Off or Fsr1. Default: Off.\n"
+	         "                                       FSR 1 (EASU + RCAS) upscale and sharpening\n"
+	         "                                       when the window is larger than the guest\n"
+	         "                                       frame. Off keeps the original bilinear\n"
+	         "                                       presentation; no effect at equal sizes.\n");
 	::printf(
 	    "  --performance-profile <value>        Auto, Handheld, Desktop, or Off. Default: Auto.\n");
 	::printf(
@@ -376,6 +381,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--display-resolution") {
 			if (!ParseEnum(value, options.config.display_resolution)) {
 				::printf("invalid display resolution: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--upscaler") {
+			if (!ParseEnum(value, options.config.upscaler)) {
+				::printf("invalid upscaler: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--gpu") {

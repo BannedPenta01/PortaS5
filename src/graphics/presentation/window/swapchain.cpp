@@ -13,6 +13,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/fsrUpscaler.h"
 #include "graphics/presentation/window/windowInternal.h"
 
 #include <algorithm>
@@ -297,6 +298,9 @@ private:
 	vk::PipelineLayout             m_overlay_layout      = nullptr;
 	vk::Pipeline                   m_overlay_pipeline    = nullptr;
 	vk::Sampler                    m_overlay_sampler     = nullptr;
+	FsrUpscaler                    m_upscaler;
+	bool                           m_upscaler_enabled = false;
+	bool                           m_upscaler_failed  = false;
 	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
 	uint32_t                       m_frame_index         = 0;
 };
@@ -401,6 +405,14 @@ void Swapchain::Create() {
 		format = *it;
 	}
 	m_format                      = format.format;
+	m_upscaler_enabled = Config::GetUpscaler() == Config::Upscaler::Fsr1;
+	m_upscaler_failed  = false;
+	// Eager init so the engagement log appears even before the first
+	// genuinely-upscaling frame (e.g. window == guest size).
+	if (m_upscaler_enabled && !m_upscaler.Initialize(m_window.graphic_ctx, m_format)) {
+		m_upscaler_failed = true;
+		LOGF("FSR 1 unavailable; keeping bilinear presentation\n");
+	}
 	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
@@ -495,6 +507,7 @@ void Swapchain::Destroy() {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
 		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
+	m_upscaler.Shutdown(graphics);
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
 	}
@@ -593,6 +606,18 @@ bool Swapchain::PrepareSystemOverlay() {
 	return m_system_overlay->PrepareFrame(m_extent, m_format, ImageCount());
 }
 
+static void EnsureFrameView(vk::Device device, Presenter::Frame& frame) {
+	if (frame.view == nullptr) {
+		vk::ImageViewCreateInfo view {};
+		view.image            = frame.image.image;
+		view.viewType         = vk::ImageViewType::e2D;
+		view.format           = frame.image.format;
+		view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		RequireVulkanSuccess(device.createImageView(&view, nullptr, &frame.view),
+		                     "create video-out overlay image view");
+	}
+}
+
 void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer) {
 	auto device = m_window.graphic_ctx.device;
 	if (m_overlay_pipeline == nullptr) {
@@ -678,15 +703,7 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 		device.destroyShaderModule(vertex, nullptr);
 	}
 	auto& frame = *layer.frame;
-	if (frame.view == nullptr) {
-		vk::ImageViewCreateInfo view {};
-		view.image            = frame.image.image;
-		view.viewType         = vk::ImageViewType::e2D;
-		view.format           = frame.image.format;
-		view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-		RequireVulkanSuccess(device.createImageView(&view, nullptr, &frame.view),
-		                     "create video-out overlay image view");
-	}
+	EnsureFrameView(device, frame);
 	const vk::DescriptorImageInfo image {m_overlay_sampler, frame.view,
 	                                     vk::ImageLayout::eShaderReadOnlyOptimal};
 	vk::WriteDescriptorSet        write {};
@@ -726,65 +743,110 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
+
+	// FSR 1 engages only for a genuine upscale: the guest frame
+	// must be smaller than the swapchain on both axes. Equal or
+	// larger frames keep the faithful bilinear blit.
+	const bool upscalable = m_upscaler_enabled && !m_upscaler_failed &&
+	                        source != nullptr &&
+	                        source->image.extent.width < m_extent.width &&
+	                        source->image.extent.height < m_extent.height;
+	if (upscalable && !m_upscaler.Enabled() &&
+	    !m_upscaler.Initialize(m_window.graphic_ctx, m_format)) {
+		m_upscaler_failed = true;
+		LOGF("FSR 1 unavailable; keeping bilinear presentation\n");
+	}
+	const bool use_fsr = upscalable &&
+	                     m_upscaler.Prepare(m_window.graphic_ctx, m_extent, m_format);
+
 	if (source != nullptr) {
-		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
-		                vk::AccessFlagBits2::eTransferRead);
+		source->Transit(vk_command,
+		                use_fsr ? vk::ImageLayout::eShaderReadOnlyOptimal
+		                        : vk::ImageLayout::eTransferSrcOptimal,
+		                use_fsr ? vk::AccessFlagBits2::eShaderRead
+		                        : vk::AccessFlagBits2::eTransferRead);
 	}
 	if (draw_overlay) {
 		overlay.frame->Transit(vk_command, vk::ImageLayout::eShaderReadOnlyOptimal,
 		                       vk::AccessFlagBits2::eShaderRead);
 	}
 
-	vk::ImageMemoryBarrier to_transfer {};
-	to_transfer.sType                           = vk::StructureType::eImageMemoryBarrier;
-	to_transfer.dstAccessMask                   = vk::AccessFlagBits::eTransferWrite;
-	to_transfer.oldLayout                       = vk::ImageLayout::eUndefined;
-	to_transfer.newLayout                       = vk::ImageLayout::eTransferDstOptimal;
-	to_transfer.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-	to_transfer.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
-	to_transfer.image                           = m_images[m_image_index];
-	to_transfer.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
-	to_transfer.subresourceRange.baseMipLevel   = 0;
-	to_transfer.subresourceRange.levelCount     = 1;
-	to_transfer.subresourceRange.baseArrayLayer = 0;
-	to_transfer.subresourceRange.layerCount     = 1;
-	// Match the acquire wait stage so the layout transition cannot precede acquisition.
-	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-	                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
-	                           nullptr, 0, nullptr, 1, &to_transfer);
+	vk::AccessFlagBits  present_src_access = vk::AccessFlagBits::eTransferWrite;
+	vk::ImageLayout     present_src_layout = vk::ImageLayout::eTransferDstOptimal;
+	vk::PipelineStageFlagBits present_src_stage = vk::PipelineStageFlagBits::eTransfer;
 
-	if (source != nullptr) {
-		vk::ImageBlit region {};
-		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
-		region.srcSubresource.mipLevel       = 0;
-		region.srcSubresource.baseArrayLayer = 0;
-		region.srcSubresource.layerCount     = 1;
-		region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
-		region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
-		region.srcOffsets[1].z               = 1;
-		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
-		region.dstSubresource.mipLevel       = 0;
-		region.dstSubresource.baseArrayLayer = 0;
-		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
-		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
-		region.dstOffsets[1].z               = 1;
-		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
-		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
-		                     &region, vk::Filter::eLinear);
+	if (use_fsr) {
+		// FSR 1: EASU upscale into an intermediate image, then RCAS
+		// sharpening straight into the swapchain image. The swapchain
+		// image ends up in General layout, shader-written.
+		EnsureFrameView(m_window.graphic_ctx.device, *source);
+		if (::std::getenv("KYTY_FPS_LOG") != nullptr) {
+			static bool logged = false;
+			if (!logged) {
+				logged = true;
+				::std::printf("FSR: upscaling %ux%u -> %ux%u\n",
+				               source->image.extent.width, source->image.extent.height,
+				               m_extent.width, m_extent.height);
+				::std::fflush(stdout);
+			}
+		}
+		m_upscaler.Record(vk_command, source->image, source->view,
+		                  m_images[m_image_index], m_image_views[m_image_index]);
+		present_src_access = vk::AccessFlagBits::eShaderWrite;
+		present_src_layout = vk::ImageLayout::eGeneral;
+		present_src_stage  = vk::PipelineStageFlagBits::eComputeShader;
 	} else {
-		const vk::ClearColorValue black {};
-		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
-		                           &black, 1, &to_transfer.subresourceRange);
+		vk::ImageMemoryBarrier to_transfer {};
+		to_transfer.sType                           = vk::StructureType::eImageMemoryBarrier;
+		to_transfer.dstAccessMask                   = vk::AccessFlagBits::eTransferWrite;
+		to_transfer.oldLayout                       = vk::ImageLayout::eUndefined;
+		to_transfer.newLayout                       = vk::ImageLayout::eTransferDstOptimal;
+		to_transfer.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+		to_transfer.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+		to_transfer.image                           = m_images[m_image_index];
+		to_transfer.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
+		to_transfer.subresourceRange.baseMipLevel   = 0;
+		to_transfer.subresourceRange.levelCount     = 1;
+		to_transfer.subresourceRange.baseArrayLayer = 0;
+		to_transfer.subresourceRange.layerCount     = 1;
+		// Match the acquire wait stage so the layout transition cannot precede acquisition.
+		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+		                           nullptr, 0, nullptr, 1, &to_transfer);
+
+		if (source != nullptr) {
+			vk::ImageBlit region {};
+			region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
+			region.srcSubresource.mipLevel       = 0;
+			region.srcSubresource.baseArrayLayer = 0;
+			region.srcSubresource.layerCount     = 1;
+			region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
+			region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
+			region.srcOffsets[1].z               = 1;
+			region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
+			region.dstSubresource.mipLevel       = 0;
+			region.dstSubresource.baseArrayLayer = 0;
+			region.dstSubresource.layerCount     = 1;
+			region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
+			region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
+			region.dstOffsets[1].z               = 1;
+			vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+			                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
+			                     &region, vk::Filter::eLinear);
+		} else {
+			const vk::ClearColorValue black {};
+			vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+			                           &black, 1, &to_transfer.subresourceRange);
+		}
 	}
 
 	vk::ImageMemoryBarrier to_present {};
 	to_present.sType               = vk::StructureType::eImageMemoryBarrier;
-	to_present.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
+	to_present.srcAccessMask       = present_src_access;
 	to_present.dstAccessMask       = draw_attachment ? vk::AccessFlagBits::eColorAttachmentRead |
 	                                                       vk::AccessFlagBits::eColorAttachmentWrite
 	                                                 : vk::AccessFlagBits::eMemoryRead;
-	to_present.oldLayout           = vk::ImageLayout::eTransferDstOptimal;
+	to_present.oldLayout           = present_src_layout;
 	to_present.newLayout           = draw_attachment ? vk::ImageLayout::eColorAttachmentOptimal
 	                                                 : vk::ImageLayout::ePresentSrcKHR;
 	to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -795,7 +857,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	to_present.subresourceRange.levelCount     = 1;
 	to_present.subresourceRange.baseArrayLayer = 0;
 	to_present.subresourceRange.layerCount     = 1;
-	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	vk_command.pipelineBarrier(present_src_stage,
 	                           draw_attachment ? vk::PipelineStageFlagBits::eColorAttachmentOutput
 	                                           : vk::PipelineStageFlagBits::eAllCommands,
 	                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
@@ -982,7 +1044,7 @@ bool Presenter::IsGuestPaused() const noexcept {
 	return m_impl->window.loop.paused.load(std::memory_order_acquire);
 }
 
-bool Presenter::NeedsSystemOverlayRefresh() const noexcept {
+bool Presenter::NeedsSystemOverlayRefresh() const noxcept {
 	const auto visual = GetSystemOverlayVisualState();
 	return visual.active ||
 	       visual.revision != m_impl->presented_overlay_revision.load(std::memory_order_acquire);

@@ -68,6 +68,10 @@ DisplayResolution GetDisplayResolution() {
 	return g_config->display_resolution;
 }
 
+Upscaler GetUpscaler() {
+	return g_config->upscaler;
+}
+
 int32_t GetGpuIndex() {
 	return g_config->gpu_index;
 }
