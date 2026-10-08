@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -109,6 +111,27 @@ public:
 
 		// This carries PTS/DTS/attachedData through codecs that reorder B frames.
 		m_codec->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
+		// Match avPlayer: multithreaded software decode (see VideoDecodeThreadCount
+		// there). Single-threaded ffmpeg defaults stall on HD/4K game videos.
+		// KYTY_VIDEO_THREADS overrides (1 restores legacy behavior for A/B tests).
+		int video_threads = 0;
+		if (const char* env = std::getenv("KYTY_VIDEO_THREADS")) {
+			int n = std::atoi(env);
+			if (n >= 1 && n <= 64) {
+				video_threads = n;
+			}
+		}
+		if (video_threads == 0) {
+			if (unsigned threads = std::thread::hardware_concurrency(); threads > 6) {
+				video_threads = 6;
+			} else if (threads <= 1) {
+				video_threads = 2;
+			} else {
+				video_threads = static_cast<int>(threads);
+			}
+		}
+		m_codec->thread_count = video_threads;
+		m_codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 		const int result = avcodec_open2(m_codec, decoder, nullptr);
 		if (result < 0) {
 			LOGF("Videodec2: avcodec_open2 failed: %s (%d)\n", AvErrorString(result), result);
