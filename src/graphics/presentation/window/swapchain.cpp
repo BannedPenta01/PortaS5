@@ -1044,7 +1044,7 @@ bool Presenter::IsGuestPaused() const noexcept {
 	return m_impl->window.loop.paused.load(std::memory_order_acquire);
 }
 
-bool Presenter::NeedsSystemOverlayRefresh() const noxcept {
+bool Presenter::NeedsSystemOverlayRefresh() const noexcept {
 	const auto visual = GetSystemOverlayVisualState();
 	return visual.active ||
 	       visual.revision != m_impl->presented_overlay_revision.load(std::memory_order_acquire);

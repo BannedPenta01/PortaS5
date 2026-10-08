@@ -152,6 +152,11 @@ include_directories(
 	${PROJECT_BINARY_DIR}
 	${KYTY_SOURCE_DIR}
 )
+# The build host's flattened /lib,/usr/lib no longer lets clang-16
+# auto-discover the libstdc++ headers; add them explicitly.
+if(EXISTS "/usr/include/c++/12")
+	include_directories(/usr/include/c++/12 /usr/include/x86_64-linux-gnu/c++/12)
+endif()
 
 set(KYTY_VERSION "${PROJECT_VERSION}")
 
