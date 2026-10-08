@@ -26,6 +26,7 @@ private:
 	void LoadRemote();
 	void PreviewRemote();
 	void ImportRemote();
+	void DownloadCommunity();
 
 	QString                   m_title_id;
 	QString                   m_version;
@@ -43,6 +44,7 @@ private:
 	QLabel*                   m_preview_status = nullptr;
 	QPushButton*              m_refresh        = nullptr;
 	QPushButton*              m_import         = nullptr;
+	QPushButton*              m_community_download = nullptr;
 	QListWidget*              m_patches        = nullptr;
 	QLabel*                   m_status         = nullptr;
 	QPushButton*              m_apply          = nullptr;

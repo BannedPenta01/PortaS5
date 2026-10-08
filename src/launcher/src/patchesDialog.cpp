@@ -2,7 +2,9 @@
 
 #include "cheatFile.h"
 #include "configuration.h"
+#include "patchCatalog.h"
 
+#include <QApplication>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileInfo>
@@ -93,7 +95,17 @@ PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
 	m_refresh            = remote_buttons->addButton(tr("Refresh"), QDialogButtonBox::ActionRole);
 	m_import = remote_buttons->addButton(tr("Import to Local"), QDialogButtonBox::ActionRole);
 	m_import->setEnabled(false);
+	m_community_download =
+	    remote_buttons->addButton(tr("Download community patches"), QDialogButtonBox::ActionRole);
 	remote_layout->addWidget(remote_buttons);
+	auto* community = new QLabel(
+	    tr("Community performance patches: "
+	       "<a href=\"https://github.com/BannedPenta01/ps5-game-patches\">BannedPenta01 / "
+	       "ps5-game-patches</a> (view, download, contribute)."),
+	    remote);
+	community->setOpenExternalLinks(true);
+	community->setWordWrap(true);
+	remote_layout->addWidget(community);
 
 	auto* local        = new QWidget(m_tabs);
 	auto* local_layout = new QVBoxLayout(local);
@@ -113,6 +125,8 @@ PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
 	connect(m_apply, &QPushButton::clicked, this, &PatchesDialog::Save);
 	connect(m_refresh, &QPushButton::clicked, this, &PatchesDialog::LoadRemote);
 	connect(m_import, &QPushButton::clicked, this, &PatchesDialog::ImportRemote);
+	connect(m_community_download, &QPushButton::clicked, this,
+	        &PatchesDialog::DownloadCommunity);
 	connect(m_files, &QTreeWidget::currentItemChanged, this, &PatchesDialog::PreviewRemote);
 
 	m_repository = new Cheats::CheatRepository(this);
@@ -305,5 +319,19 @@ void PatchesDialog::ImportRemote() {
 	m_status->setText(
 	    tr("Imported %1 cheat(s). Select cheats and apply your selection for the next game launch.")
 	        .arg(mods.size()));
+	m_tabs->setCurrentIndex(1);
+}
+
+void PatchesDialog::DownloadCommunity() {
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	const auto error = CommunityPatches::DownloadToLocal(m_title_id, m_version);
+	QApplication::restoreOverrideCursor();
+	if (!error.isEmpty()) {
+		m_remote_status->setText(error);
+		return;
+	}
+	QMessageBox::information(this, tr("Patches"),
+	                         tr("Patches successfully downloaded."));
+	Load();
 	m_tabs->setCurrentIndex(1);
 }

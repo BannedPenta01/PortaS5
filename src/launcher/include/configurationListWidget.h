@@ -61,6 +61,7 @@ public slots:
 protected slots:
 
 	void edit_configuration();
+	void open_patches();
 	void delete_configuartion();
 	void edit_global_settings();
 	void edit_input_mapping();

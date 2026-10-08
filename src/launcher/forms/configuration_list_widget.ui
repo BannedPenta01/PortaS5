@@ -142,7 +142,7 @@
           </widget>
          </item>
          <item>
-          <widget class="QToolButton" name="delete_button">
+          <widget class="QToolButton" name="patches_button">
            <property name="minimumSize">
            <size>
              <width>36</width>
@@ -150,7 +150,7 @@
             </size>
            </property>
            <property name="toolTip">
-            <string>Clear game config</string>
+            <string>Download and apply community patches for the selected game</string>
            </property>
            <property name="styleSheet">
             <string notr="true"/>
