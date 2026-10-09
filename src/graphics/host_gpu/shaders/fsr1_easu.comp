@@ -1,0 +1,45 @@
+// FSR 1 (MIT, AMD) edge-adaptive spatial upscale wrapper.
+// Input: low-res guest frame (sampled via gather4, as the reference
+// implementation requires). Output: swapchain-extent image.
+// Constants con0..con3 are computed on the CPU with FsrEasuCon() and passed
+// as push constants.
+#version 450
+
+#extension GL_GOOGLE_include_directive : require
+
+#define A_GPU 1
+#define A_GLSL 1
+#define FSR_EASU_F 1
+
+#include "ffx_a.h"
+#include "ffx_fsr1.h"
+
+layout(set = 0, binding = 0) uniform sampler2D u_input;
+layout(set = 0, binding = 1) uniform writeonly image2D u_output;
+
+layout(push_constant) uniform PushConstants {
+	uvec4 con0;
+	uvec4 con1;
+	uvec4 con2;
+	uvec4 con3;
+} u_consts;
+
+AF4 FsrEasuRF(AF2 p) {
+	return textureGather(u_input, p, 0);
+}
+
+AF4 FsrEasuGF(AF2 p) {
+	return textureGather(u_input, p, 1);
+}
+
+AF4 FsrEasuBF(AF2 p) {
+	return textureGather(u_input, p, 2);
+}
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+void main() {
+	AU2 gxy = AU2(gl_GlobalInvocationID.xy);
+	AF3 c;
+	FsrEasuF(c, gxy, u_consts.con0, u_consts.con1, u_consts.con2, u_consts.con3);
+	imageStore(u_output, ivec2(gxy), vec4(c, 1.0));
+}

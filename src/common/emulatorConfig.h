@@ -7,6 +7,8 @@
 #include <array>
 #include <filesystem>
 #include <optional>
+#include "common/performanceProfile.h"
+
 #include <string>
 #include <vector>
 
@@ -26,6 +28,9 @@ enum class ShaderOptimizationType { None, Size, Performance };
 enum class LogDirection { Silent, Console, File };
 
 enum class PresentMode { Fifo, Mailbox, Immediate };
+
+enum class DisplayResolution { Auto, HD, FullHD, UltraHD };
+enum class Upscaler { Off, Fsr1 };
 
 using Keymap = std::vector<std::string>;
 using ControllerColor = std::array<uint8_t, 3>;
@@ -61,6 +66,8 @@ struct ConfigOptions {
 	uint32_t               audio_music_volume             = 100;
 	uint32_t               audio_pad_speaker_main_volume  = DEFAULT_AUDIO_PAD_SPEAKER_MAIN_VOLUME;
 	PresentMode            present_mode                = PresentMode::Mailbox;
+	DisplayResolution      display_resolution          = DisplayResolution::Auto;
+	Upscaler               upscaler                    = Upscaler::Off;
 	int32_t                gpu_index                   = -1;
 	bool                   fullscreen_enabled          = false;
 	bool                   hide_cursor_enabled         = false;
@@ -84,6 +91,7 @@ struct ConfigOptions {
 	bool                   renderdoc_enabled           = false;
 	bool                   readback_linear_images      = false;
 	bool                   tessellation_enabled        = false;
+	PerformanceProfile     performance_profile        = PerformanceProfile::Auto;
 	bool                   trophy_enabled              = true;
 	bool                   playgo_hack_enabled         = false;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -107,6 +115,8 @@ uint32_t GetAudioMainVolume();
 uint32_t GetAudioMusicVolume();
 uint32_t GetAudioPadSpeakerOnMainVolume();
 PresentMode GetPresentMode();
+DisplayResolution GetDisplayResolution();
+Upscaler        GetUpscaler();
 int32_t GetGpuIndex();
 bool     FullscreenEnabled();
 bool     HideCursorEnabled();
@@ -137,6 +147,7 @@ bool GpuAssistedValidationEnabled();
 
 bool RenderDocEnabled();
 bool ReadbackLinearImagesEnabled();
+PerformanceProfile GetPerformanceProfile();
 bool TessellationEnabled();
 bool TrophyEnabled();
 bool PlayGoHackEnabled();

@@ -131,6 +131,20 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 	Config::Load(cfg);
 	subsystems.Initialize<Log::Lifecycle>();
 
+	{
+		const Config::SystemProfile& detected = Config::GetSystemProfile();
+		const char* mode = "Off";
+		switch (Config::CurrentProfile()) {
+		case Config::PerformanceProfile::Handheld: mode = "Handheld"; break;
+		case Config::PerformanceProfile::Desktop: mode = "Desktop"; break;
+		case Config::PerformanceProfile::Off: mode = "Off"; break;
+		case Config::PerformanceProfile::Auto: mode = "Auto"; break;
+		}
+		LOGF("Performance profile: mode=%s detected=[apu=%d handheld=%d ram=%d] threads=%u\n", mode,
+		     detected.amd_apu_detected ? 1 : 0, detected.handheld_detected ? 1 : 0,
+		     static_cast<int>(detected.ram_tier), detected.logical_threads);
+	}
+
 	if (Common::File::IsFileExisting(param_json)) {
 		Loader::SystemContentLoadParamSfo(param_json);
 		if (const auto flexible_memory_size = Loader::SystemContentGetFlexibleMemorySize();

@@ -148,6 +148,7 @@ include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
 	${KYTY_THIRD_PARTY_DIR}/gtest
 	${KYTY_THIRD_PARTY_DIR}/fmt/include
+	${KYTY_THIRD_PARTY_DIR}/fsr1
 	${KYTY_THIRD_PARTY_DIR}/magic_enum/include/magic_enum
 	${PROJECT_BINARY_DIR}
 	${KYTY_SOURCE_DIR}
@@ -498,6 +499,35 @@ add_custom_command(
 )
 list(APPEND kyty_emulator_src "${gpu_mesh_indirect_header}")
 
+# FSR 1 (MIT, AMD) spatial upscaler + RCAS sharpening for the presentation
+# path. Compiled with the FSR headers on the include path.
+set(fsr1_shader_dir "${KYTY_SOURCE_DIR}/graphics/host_gpu/shaders")
+set(fsr1_generated_dir "${PROJECT_BINARY_DIR}/fsr1_shaders")
+set(fsr1_shader_names
+	fsr1_easu
+	fsr1_rcas
+)
+foreach(shader_name IN LISTS fsr1_shader_names)
+	set(shader_source "${fsr1_shader_dir}/${shader_name}.comp")
+	set(shader_spv "${fsr1_generated_dir}/${shader_name}.spv")
+	set(shader_header "${fsr1_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${fsr1_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+		        "-I${KYTY_THIRD_PARTY_DIR}/fsr1" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}"
+		        "${KYTY_THIRD_PARTY_DIR}/fsr1/ffx_a.h"
+		        "${KYTY_THIRD_PARTY_DIR}/fsr1/ffx_fsr1.h"
+		VERBATIM
+	)
+	list(APPEND fsr1_shader_headers "${shader_header}")
+endforeach()
+list(APPEND kyty_emulator_src ${fsr1_shader_headers})
+
 # Persistent program cache (KYTY_PROGRAM_CACHE, pipeline/programDiskCache.h): the codegen version
 # (recompiler/CodegenFingerprint.h) hashes these files, the code that determines what translating
 # a program produces. src/codegen_version.cmake fails the build when one of them includes a
@@ -710,6 +740,11 @@ target_include_directories(spirv_cache_salt_tests PRIVATE ${inc_headers})
 
 add_executable(pipeline_compile_queue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineCompileQueueTests.cpp")
 target_include_directories(pipeline_compile_queue_tests PRIVATE ${inc_headers})
+
+# shaderPrecompile.cpp uses try/catch while the project builds with -fno-exceptions.
+set_source_files_properties(
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
+	PROPERTIES COMPILE_OPTIONS -fexceptions)
 
 # Shader precompile (KYTY_SHADER_PRECOMPILE): the journal file and the replay driver.
 add_executable(shader_precompile_tests EXCLUDE_FROM_ALL

@@ -14,6 +14,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/fsrUpscaler.h"
 #include "graphics/presentation/window/windowInternal.h"
 
 #include <algorithm>
@@ -311,6 +312,9 @@ private:
 	vk::Pipeline                   m_overlay_pipeline    = nullptr;
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	PresentFilter                  m_filter; // KYTY_PRESENT_BOX_DOWNSCALE
+	FsrUpscaler                    m_upscaler;
+	bool                           m_upscaler_enabled = false;
+	bool                           m_upscaler_failed  = false;
 	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
 	uint32_t                       m_frame_index         = 0;
 };
@@ -393,6 +397,8 @@ void Swapchain::Create() {
 		format = *it;
 	}
 	m_format                      = format.format;
+	m_upscaler_enabled = Config::GetUpscaler() == Config::Upscaler::Fsr1;
+	m_upscaler_failed  = false;
 	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
@@ -440,6 +446,10 @@ void Swapchain::Create() {
 	m_minimized           = false;
 	m_surface_extent_zero = false;
 	m_suboptimal          = false;
+	if (m_upscaler_enabled && !m_upscaler.Enabled() &&
+	    !m_upscaler.Initialize(graphics, m_format)) {
+		m_upscaler_failed = true;
+	}
 
 	uint32_t image_count = surface.capabilities.minImageCount + 1;
 	if (surface.capabilities.maxImageCount != 0) {
@@ -462,8 +472,9 @@ void Swapchain::Create() {
 	create_info.imageColorSpace  = format.colorSpace;
 	create_info.imageExtent      = m_extent;
 	create_info.imageArrayLayers = 1;
-	create_info.imageUsage =
-	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
+	create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment |
+	    vk::ImageUsageFlagBits::eTransferDst |
+	    (m_upscaler_enabled ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlagBits {});
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -563,6 +574,10 @@ void Swapchain::Destroy() {
 	m_overlay_descriptors = nullptr;
 	m_overlay_sampler     = nullptr;
 	m_filter.Release(graphics.device);
+	if (m_upscaler.Enabled()) {
+		m_upscaler.Shutdown(graphics);
+	}
+	m_upscaler_failed = false;
 
 	for (const auto semaphore: m_image_acquired) {
 		if (semaphore != nullptr) {
@@ -1006,7 +1021,17 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	                      : vk::Extent2D {};
 	const bool filtered = source != nullptr && PresentBoxDownscaleEnabled() &&
 	                      PresentNeedsFilter(source_extent, m_extent);
-	if (filtered) {
+	// FSR 1 upscale: guest frame strictly smaller than the swapchain in at least
+	// one dimension and no larger in the other. Falls back to the bilinear blit
+	// when allocation fails.
+	const bool want_fsr = m_upscaler_enabled && !m_upscaler_failed && source != nullptr &&
+	                      !filtered && source_extent.width <= m_extent.width &&
+	                      source_extent.height <= m_extent.height &&
+	                      (source_extent.width < m_extent.width ||
+	                       source_extent.height < m_extent.height);
+	const bool use_fsr =
+	    want_fsr && m_upscaler.Prepare(m_window.graphic_ctx, m_extent, m_format);
+	if (filtered || use_fsr) {
 		if (source->view == nullptr) {
 			vk::ImageViewCreateInfo view {};
 			view.image            = source->image.image;
@@ -1030,11 +1055,13 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 
 	vk::ImageMemoryBarrier to_transfer {};
 	to_transfer.sType = vk::StructureType::eImageMemoryBarrier;
-	to_transfer.dstAccessMask =
-	    filtered ? vk::AccessFlagBits::eColorAttachmentWrite : vk::AccessFlagBits::eTransferWrite;
+	to_transfer.dstAccessMask = use_fsr                 ? vk::AccessFlagBits::eShaderWrite
+	                              : filtered            ? vk::AccessFlagBits::eColorAttachmentWrite
+	                                                    : vk::AccessFlagBits::eTransferWrite;
 	to_transfer.oldLayout = vk::ImageLayout::eUndefined;
-	to_transfer.newLayout =
-	    filtered ? vk::ImageLayout::eColorAttachmentOptimal : vk::ImageLayout::eTransferDstOptimal;
+	to_transfer.newLayout = use_fsr                 ? vk::ImageLayout::eGeneral
+	                          : filtered            ? vk::ImageLayout::eColorAttachmentOptimal
+	                                                : vk::ImageLayout::eTransferDstOptimal;
 	to_transfer.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
 	to_transfer.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
 	to_transfer.image                           = m_images[m_image_index];
@@ -1044,12 +1071,16 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	to_transfer.subresourceRange.baseArrayLayer = 0;
 	to_transfer.subresourceRange.layerCount     = 1;
 	// Match the acquire wait stage so the layout transition cannot precede acquisition.
-	const auto write_stage = filtered ? vk::PipelineStageFlagBits::eColorAttachmentOutput
-	                                  : vk::PipelineStageFlagBits::eTransfer;
+	const auto write_stage = use_fsr                 ? vk::PipelineStageFlagBits::eComputeShader
+	                         : filtered            ? vk::PipelineStageFlagBits::eColorAttachmentOutput
+	                                                 : vk::PipelineStageFlagBits::eTransfer;
 	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, write_stage,
 	                           vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &to_transfer);
 
-	if (filtered) {
+	if (use_fsr) {
+		m_upscaler.Record(vk_command, source->image, source->view, m_images[m_image_index],
+		                  m_image_views[m_image_index]);
+	} else if (filtered) {
 		m_filter.Record(m_window.graphic_ctx.device, vk_command, source->view, 0, source_extent,
 		                m_image_views[m_image_index], m_format, m_extent);
 	} else if (source != nullptr) {
@@ -1079,8 +1110,9 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 
 	vk::ImageMemoryBarrier to_present {};
 	to_present.sType               = vk::StructureType::eImageMemoryBarrier;
-	to_present.srcAccessMask =
-	    filtered ? vk::AccessFlagBits::eColorAttachmentWrite : vk::AccessFlagBits::eTransferWrite;
+	to_present.srcAccessMask = use_fsr                 ? vk::AccessFlagBits::eShaderWrite
+	                         : filtered            ? vk::AccessFlagBits::eColorAttachmentWrite
+	                                                 : vk::AccessFlagBits::eTransferWrite;
 	to_present.dstAccessMask       = draw_attachment ? vk::AccessFlagBits::eColorAttachmentRead |
 	                                                       vk::AccessFlagBits::eColorAttachmentWrite
 	                                                 : vk::AccessFlagBits::eMemoryRead;

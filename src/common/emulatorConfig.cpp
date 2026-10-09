@@ -83,6 +83,14 @@ PresentMode GetPresentMode() {
 	return g_config->present_mode;
 }
 
+DisplayResolution GetDisplayResolution() {
+	return g_config->display_resolution;
+}
+
+Upscaler GetUpscaler() {
+	return g_config->upscaler;
+}
+
 int32_t GetGpuIndex() {
 	return g_config->gpu_index;
 }
@@ -173,6 +181,10 @@ bool ReadbackLinearImagesEnabled() {
 
 bool TessellationEnabled() {
 	return g_config->tessellation_enabled;
+}
+
+PerformanceProfile GetPerformanceProfile() {
+	return g_config->performance_profile;
 }
 
 bool TrophyEnabled() {
