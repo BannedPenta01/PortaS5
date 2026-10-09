@@ -349,3 +349,16 @@ Release with Ninja in an x64 Visual Studio developer shell, as in `.github/workf
 The Windows release is produced by a tagged GitHub Actions build. Original licenses and credits remain intact.
 Personal handoffs, local editor configuration, captures, saves and caches are excluded. Historical results and their
 limitations are described in [CHANGES-U59.md](CHANGES-U59.md).
+
+Handheld (Radeon 780M / Ryzen Z1, RADV): black 3D with lit 2D
+---------------------------------------------------------------
+Astro's Playroom renders every lit surface black on the RADV driver of the
+ROG Ally / Batocera handhelds unless two codegen switches are set:
+`KYTY_SRT_VARIANT_READS=1` (the GI kernels read SRT pointers no pre-pass can
+prove, so their dispatches are skipped) and a software-RT node budget above
+the 8192 default (`KYTY_RT_NODE_BUDGET=262144` lights the scene; a huge
+budget makes the BVH kernels run so long they trip the amdgpu ring timeout
+and the GPU wedges). `tools/ally-preset.env` holds the full environment the
+handheld launcher sources (the u59 preset plus these two switches); the
+Batocera launcher script is `tools/batocera-kyty.sh`. Verified 2026-10-10:
+title and hub render lit, RAM ~6.8 GB RSS, no device loss over a 7-minute run.
