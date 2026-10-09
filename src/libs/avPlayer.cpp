@@ -11,10 +11,12 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -24,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 extern "C" {
@@ -392,6 +395,31 @@ static bool codec_is_supported_for_source(AvPlayerSourceType source_type, AVMedi
 			return codec_id == AV_CODEC_ID_OPUS || codec_id == AV_CODEC_ID_VORBIS;
 		default: return true;
 	}
+}
+
+// Video decode was historically single-threaded (ffmpeg defaults to
+// thread_count=1). Game cutscenes include 4K HEVC which needs threading to
+// play smoothly on handheld APUs. Frame+slice threading lets each decoder
+// pick what it supports; count scales with host cores, capped to avoid
+// oversubscription with the emulator's own workers.
+int VideoDecodeThreadCount() {
+	if (const char* env = std::getenv("KYTY_VIDEO_THREADS")) {
+		int n = std::atoi(env);
+		if (n >= 1 && n <= 64) {
+			return n;
+		}
+	}
+	unsigned threads = std::thread::hardware_concurrency();
+	if (threads <= 1) {
+		return 2;
+	}
+	// Capped at 6 (not 8): measured decode load is ~150% CPU even on 4K HEVC,
+	// and handhelds run under a strict package power budget - spare threads
+	// are worth more to the render path than to the decoder.
+	if (threads > 6) {
+		return 6;
+	}
+	return static_cast<int>(threads);
 }
 
 static const AVCodec* find_decoder(AVCodecID codec_id) {
@@ -1147,6 +1175,10 @@ private:
 		if (c == nullptr) {
 			return false;
 		}
+		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+			c->thread_count = VideoDecodeThreadCount();
+			c->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+		}
 		if (avcodec_parameters_to_context(c, s->codecpar) < 0 ||
 		    avcodec_open2(c, dec, nullptr) < 0) {
 			avcodec_free_context(&c);
@@ -1527,18 +1559,34 @@ private:
 		    size > buffer->Size()) {
 			return false;
 		}
-		AVFrame* nv12 = src;
-		AVFrame* tmp  = nullptr;
-		if (src->format != AV_PIX_FMT_NV12) {
-			tmp = av_frame_alloc();
-			if (tmp == nullptr) {
+		// Convert directly into
+		// the guest buffer (which already has the required pitch) instead of an
+		// intermediate frame plus a second full-frame copy. The old path
+		// allocated+freed a ~12MB frame per video frame; this removes that churn
+		// and one full memory pass over every 4K cutscene frame.
+		auto*      dst        = buffer->Get();
+		auto*      chroma     = dst + static_cast<size_t>(pitch) * h;
+		// PPSA02433 samples the padded columns; zero chroma would turn them green.
+		std::memset(dst, s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16,
+		            static_cast<size_t>(pitch) * h);
+		std::memset(chroma, 128, static_cast<size_t>(pitch) * h / 2);
+		if (src->format == AV_PIX_FMT_NV12) {
+			if (src->data[0] == nullptr || src->data[1] == nullptr ||
+			    src->linesize[0] < src->width || src->linesize[1] < src->width) {
 				return false;
 			}
-			tmp->format = AV_PIX_FMT_NV12;
-			tmp->width  = src->width;
-			tmp->height = src->height;
-			if (av_frame_get_buffer(tmp, 0) < 0) {
-				av_frame_free(&tmp);
+			for (int y = 0; y < src->height; y++) {
+				std::memcpy(dst + static_cast<size_t>(y) * pitch,
+				            src->data[0] + static_cast<ptrdiff_t>(y) * src->linesize[0],
+				            src->width);
+			}
+			for (int y = 0; y < src->height / 2; y++) {
+				std::memcpy(chroma + static_cast<size_t>(y) * pitch,
+				            src->data[1] + static_cast<ptrdiff_t>(y) * src->linesize[1],
+				            src->width);
+			}
+		} else {
+			if (src->data[0] == nullptr || src->data[1] == nullptr || src->data[2] == nullptr) {
 				return false;
 			}
 			if (sws == nullptr || sws_src_width != src->width || sws_src_height != src->height ||
@@ -1554,34 +1602,14 @@ private:
 				sws_src_format = src->format;
 			}
 			if (sws == nullptr) {
-				av_frame_free(&tmp);
 				return false;
 			}
-			if (sws_scale(sws, src->data, src->linesize, 0, src->height, tmp->data,
-			              tmp->linesize) != src->height) {
-				av_frame_free(&tmp);
+			uint8_t* planes[4]  = {dst, chroma, nullptr, nullptr};
+			int      strides[4] = {static_cast<int>(pitch), static_cast<int>(pitch), 0, 0};
+			if (sws_scale(sws, src->data, src->linesize, 0, src->height, planes, strides) !=
+			    src->height) {
 				return false;
 			}
-			nv12 = tmp;
-		}
-		if (nv12->data[0] == nullptr || nv12->data[1] == nullptr ||
-		    nv12->linesize[0] < src->width || nv12->linesize[1] < src->width) {
-			if (tmp != nullptr) {
-				av_frame_free(&tmp);
-			}
-			return false;
-		}
-		auto* dst = buffer->Get();
-		auto* c   = dst + pitch * h;
-		// PPSA02433 samples the padded columns; zero chroma would turn them green.
-		std::memset(dst, s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16,
-		            static_cast<size_t>(pitch) * h);
-		std::memset(c, 128, static_cast<size_t>(pitch) * h / 2);
-		for (int y = 0; y < src->height; y++) {
-			std::memcpy(dst + y * pitch, nv12->data[0] + y * nv12->linesize[0], src->width);
-		}
-		for (int y = 0; y < src->height / 2; y++) {
-			std::memcpy(c + y * pitch, nv12->data[1] + y * nv12->linesize[1], src->width);
 		}
 		std::memset(info, 0, sizeof(*info));
 		info->data       = dst;
@@ -1596,9 +1624,6 @@ private:
 		info->details.video.crop_bottom_offset =
 		    static_cast<uint32_t>(src->crop_bottom + (h - src->height));
 		info->details.video.pitch = pitch;
-		if (tmp) {
-			av_frame_free(&tmp);
-		}
 		return true;
 	}
 	bool PrepareAudio(AVFrame* src, std::unique_ptr<GuestBuffer>& buffer,
