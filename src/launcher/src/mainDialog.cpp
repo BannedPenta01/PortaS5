@@ -6,6 +6,7 @@
 #include "controllerLightbar.h"
 #include "gameContent.h"
 #include "patchesDialog.h"
+#include "patchCatalog.h"
 #include "updateChecker.h"
 
 #include <QApplication>
@@ -522,10 +523,14 @@ void MainDialogPrivate::Run() {
 		return;
 	}
 
+	auto info = m_ui->widget->CreateConfiguration(*m_running_item);
+	// Community patch offer: downloads land in _Patches before the emulator
+	// arguments are built, so a fresh download applies to this very launch.
+	CommunityPatches::OfferOnRun(m_main_dialog, info->title_id, info->gameVersion);
+
 	m_running_item->SetRunning(true);
 	m_lightbar.Stop();
 
-	auto info = m_ui->widget->CreateConfiguration(*m_running_item);
 	m_main_dialog->RunInterpreter(&m_process, *info);
 
 	Update();

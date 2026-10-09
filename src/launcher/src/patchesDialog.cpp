@@ -1,9 +1,13 @@
 #include "patchesDialog.h"
 
 #include "configuration.h"
+#include "patchCatalog.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFileInfo>
+#include <QMessageBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
@@ -17,7 +21,10 @@
 #include <QVBoxLayout>
 
 PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
-    : QDialog(parent), m_title_id(game.title_id.trimmed().toUpper()) {
+    : QDialog(parent),
+      m_title_id(game.title_id.trimmed().toUpper()),
+      m_version(game.gameVersion),
+      m_process(QFileInfo(game.elf.isEmpty() ? QStringLiteral("eboot.bin") : game.elf).fileName()) {
 	setAttribute(Qt::WA_DeleteOnClose);
 	setWindowTitle(tr("Cheats (experimental) - %1").arg(game.name));
 	resize(640, 480);
@@ -31,11 +38,23 @@ PatchesDialog::PatchesDialog(const Configuration& game, QWidget* parent)
 	m_status->setWordWrap(true);
 	layout->addWidget(m_patches);
 	layout->addWidget(m_status);
+	m_community_download = new QPushButton(tr("Download community patches"), this);
+	layout->addWidget(m_community_download);
+	auto* community = new QLabel(
+	    tr("Community performance patches: "
+	       "<a href=\"https://github.com/BannedPenta01/ps5-game-patches\">BannedPenta01 / "
+	       "ps5-game-patches</a> (view, download, contribute)."),
+	    this);
+	community->setOpenExternalLinks(true);
+	community->setWordWrap(true);
+	layout->addWidget(community);
 
 	auto* buttons = new QDialogButtonBox(this);
 	buttons->addButton(m_apply, QDialogButtonBox::ActionRole);
 	buttons->addButton(close, QDialogButtonBox::RejectRole);
 	layout->addWidget(buttons);
+	connect(m_community_download, &QPushButton::clicked, this,
+	        &PatchesDialog::DownloadCommunity);
 
 	connect(m_apply, &QPushButton::clicked, this, &PatchesDialog::Save);
 	connect(close, &QPushButton::clicked, this, &QDialog::close);
@@ -137,4 +156,16 @@ void PatchesDialog::Save() {
 		return;
 	}
 	m_status->setText(tr("Cheat selection saved."));
+}
+
+void PatchesDialog::DownloadCommunity() {
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	const auto error = CommunityPatches::DownloadToLocal(m_title_id, m_version);
+	QApplication::restoreOverrideCursor();
+	if (!error.isEmpty()) {
+		m_status->setText(error);
+		return;
+	}
+	QMessageBox::information(this, tr("Patches"), tr("Patches successfully downloaded."));
+	Load();
 }

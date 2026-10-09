@@ -212,7 +212,7 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	m_ui->global_settings_button->setToolTip(tr("Edit global settings and game folders"));
 	m_ui->input_mapping_button->setToolTip(tr("Edit global input mapping"));
 
-	m_ui->delete_button->setEnabled(false);
+	m_ui->patches_button->setEnabled(false);
 	m_ui->edit_button->setEnabled(false);
 
 	m_ui->cfgs_list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -238,8 +238,8 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	        &ConfigurationListWidget::edit_input_mapping);
 	connect(m_ui->edit_button, &QToolButton::clicked, this,
 	        &ConfigurationListWidget::edit_configuration);
-	connect(m_ui->delete_button, &QToolButton::clicked, this,
-	        &ConfigurationListWidget::delete_configuartion);
+	connect(m_ui->patches_button, &QToolButton::clicked, this,
+	        &ConfigurationListWidget::open_patches);
 	connect(m_ui->cfgs_list, &QTreeWidget::currentItemChanged, this,
 	        &ConfigurationListWidget::SelectItem);
 	connect(m_ui->cfgs_list, &QTreeWidget::itemDoubleClicked, this,
@@ -291,7 +291,7 @@ void ConfigurationListWidget::UpdateToolbarIcons() {
 	set_icon(m_ui->global_settings_button, QStringLiteral(":/icons/global-settings.svg"));
 	set_icon(m_ui->input_mapping_button, QStringLiteral(":/icons/input-mapping.svg"));
 	set_icon(m_ui->edit_button, QStringLiteral(":/icons/edit-configuration.svg"));
-	set_icon(m_ui->delete_button, QStringLiteral(":/icons/remove-configuration.svg"));
+	set_icon(m_ui->patches_button, QStringLiteral(":/icons/patches.svg"));
 }
 
 void ConfigurationListWidget::WriteSettings() {
@@ -780,6 +780,15 @@ void ConfigurationListWidget::edit_configuration() {
 	}
 }
 
+void ConfigurationListWidget::open_patches() {
+	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
+	if (item == nullptr || !PatchesDialog::IsSupportedTitleId(item->GetInfo().title_id)) {
+		return;
+	}
+	auto* dialog = new PatchesDialog(item->GetInfo(), this);
+	dialog->show();
+}
+
 void ConfigurationListWidget::delete_configuartion() {
 	auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->currentItem());
 	if (item == nullptr || !item->GetInfo().custom_settings) {
@@ -966,12 +975,13 @@ void ConfigurationListWidget::SelectItem(QTreeWidgetItem* witem) {
 		m_selected_item = nullptr;
 		m_ui->cfgs_list->SetBackgroundImage({});
 		m_ui->edit_button->setEnabled(false);
-		m_ui->delete_button->setEnabled(false);
+		m_ui->patches_button->setEnabled(false);
 		emit Select();
 		return;
 	}
 
-	m_ui->delete_button->setEnabled(!item->IsRunning() && item->GetInfo().custom_settings);
+	m_ui->patches_button->setEnabled(!item->IsRunning() &&
+	                                     PatchesDialog::IsSupportedTitleId(item->GetInfo().title_id));
 	m_ui->edit_button->setEnabled(!item->IsRunning());
 
 	m_selected_item = item;

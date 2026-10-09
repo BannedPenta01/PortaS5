@@ -20,11 +20,15 @@ public:
 private:
 	void Load();
 	void Save();
+	void DownloadCommunity();
 
 	QString      m_title_id;
+	QString      m_version;
+	QString      m_process;
 	QListWidget* m_patches = nullptr;
 	QLabel*      m_status  = nullptr;
 	QPushButton* m_apply   = nullptr;
+	QPushButton* m_community_download = nullptr;
 };
 
 #endif // PATCHES_DIALOG_H
