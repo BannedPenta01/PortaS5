@@ -42,7 +42,6 @@ QLineEdit#search_line_edit:focus {
 QToolButton#global_settings_button,
 QToolButton#input_mapping_button,
 QToolButton#edit_button,
-QToolButton#delete_button {
 QToolButton#patches_button {
     background: transparent;
     border: 1px solid transparent;
@@ -53,7 +52,6 @@ QToolButton#patches_button {
 QToolButton#global_settings_button:hover,
 QToolButton#input_mapping_button:hover,
 QToolButton#edit_button:hover,
-QToolButton#delete_button:hover {
 QToolButton#patches_button:hover {
     background: palette(button);
     border-color: palette(mid);
@@ -62,7 +60,6 @@ QToolButton#patches_button:hover {
 QToolButton#global_settings_button:pressed,
 QToolButton#input_mapping_button:pressed,
 QToolButton#edit_button:pressed,
-QToolButton#delete_button:pressed {
 QToolButton#patches_button:pressed {
     background: palette(midlight);
 }
