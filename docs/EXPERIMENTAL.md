@@ -350,15 +350,28 @@ The Windows release is produced by a tagged GitHub Actions build. Original licen
 Personal handoffs, local editor configuration, captures, saves and caches are excluded. Historical results and their
 limitations are described in [CHANGES-U59.md](CHANGES-U59.md).
 
-Handheld (Radeon 780M / Ryzen Z1, RADV): black 3D with lit 2D
----------------------------------------------------------------
-Astro's Playroom renders every lit surface black on the RADV driver of the
-ROG Ally / Batocera handhelds unless two codegen switches are set:
-`KYTY_SRT_VARIANT_READS=1` (the GI kernels read SRT pointers no pre-pass can
-prove, so their dispatches are skipped) and a software-RT node budget above
-the 8192 default (`KYTY_RT_NODE_BUDGET=262144` lights the scene; a huge
-budget makes the BVH kernels run so long they trip the amdgpu ring timeout
-and the GPU wedges). `tools/ally-preset.env` holds the full environment the
-handheld launcher sources (the u59 preset plus these two switches); the
-Batocera launcher script is `tools/batocera-kyty.sh`. Verified 2026-10-10:
-title and hub render lit, RAM ~6.8 GB RSS, no device loss over a 7-minute run.
+Handheld (Radeon 780M / Ryzen Z1, RADV): black 3D, and an unsolved hang
+------------------------------------------------------------------------
+Astro's Playroom rendered every lit surface black on the RADV driver of the
+ROG Ally / Batocera handhelds unless `KYTY_SRT_VARIANT_READS=1` is set: the
+GI kernels read SRT pointers no pre-pass can prove, so their dispatches were
+skipped. Lighting additionally needs a software-RT node budget above the
+8192 default — with the SRT switch but the default budget the main viewport
+stays black. `KYTY_RT_NODE_BUDGET=262144` renders the title and hub lit;
+`tools/ally-preset.env` holds the full environment the handheld launcher
+sources (the u59 preset plus these switches) and `tools/batocera-kyty.sh` is
+the Batocera launcher script.
+
+The GPU hang in heavier scenes was not solved (the effort was dropped
+2026-10-10): the software-BVH lighting dispatches there do more node-test
+work than amdgpu's ~10 s ring watchdog allows, so the GPU wedges and resets
+repeatedly until radv cancels the context and the guest sees
+`vkQueueSubmit ErrorDeviceLost`. It reproduced at both 65536 and 262144
+(the traversal histogram only proves the intro scene fits in 2048 tests; in
+the heavy scenes roughly 10^5 invocations exhaust even the 65536 budget),
+so lowering the budget does not reliably avoid it. VRAM was ruled out
+(1.4 GiB used of a 6.6 GiB budget, no evictions) and the
+`SRT: reads unmapped address 0x28` lines are benign (they also appear in
+crash-free runs). `amdgpu.lockup_timeout` is read-only at runtime, so the
+watchdog cannot be raised from userspace; a fix would have to shrink or
+split the lighting dispatches.
