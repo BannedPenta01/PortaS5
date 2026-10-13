@@ -797,6 +797,21 @@ void CommandProcessor::SetNumInstances(uint32_t num_instances) {
 	m_num_instances = num_instances;
 }
 
+void CommandProcessor::PublishSyntheticOcclusion(volatile uint64_t* results) {
+	// Same layout as the EVENT_WRITE dump: one begin/end pair per DB, bit 63 marks a
+	// ready result, and a per-DB count of one sample keeps "visible" predicates true.
+	constexpr uint64_t ready_bit    = 1ull << 63u;
+	constexpr uint64_t counter_mask = ready_bit - 1u;
+	const auto         begin_value  = ready_bit | m_synthetic_occlusion_counter;
+	const auto end_value =
+	    ready_bit | ((m_synthetic_occlusion_counter + 1u) & counter_mask);
+	for (uint32_t db = 0; db < 16u; db++) {
+		results[db * 2u]     = begin_value;
+		results[db * 2u + 1] = end_value;
+	}
+	m_synthetic_occlusion_counter = (m_synthetic_occlusion_counter + 2u) & counter_mask;
+}
+
 void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t wait_op,
                                       const volatile void* address, uint32_t count_in_dwords) {
 	(void)count_in_dwords;
@@ -811,17 +826,24 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 			// One begin/end pair per DB; bit 63 marks each counter ready.
 			constexpr uint64_t ready_bit = 1ull << 63u;
 			const auto* results = reinterpret_cast<const volatile uint64_t*>(address);
+			bool        ready   = true;
+			for (uint32_t db = 0; db < 16u; db++) {
+				if (((results[db * 2u] & results[db * 2u + 1u]) & ready_bit) == 0) {
+					ready = false;
+					break;
+				}
+			}
+			if (!ready) {
+				// Host occlusion queries are synthetic (always visible), so waiting for
+				// results that only this path could produce would stall the submission
+				// through the GPU thread's retry timeouts. Publish them inline instead.
+				PublishSyntheticOcclusion(reinterpret_cast<volatile uint64_t*>(
+				    const_cast<volatile void*>(address)));
+				results = reinterpret_cast<const volatile uint64_t*>(address);
+			}
 			for (uint32_t db = 0; db < 16u; db++) {
 				const auto begin = results[db * 2u];
 				const auto end   = results[db * 2u + 1u];
-				if ((begin & end & ready_bit) == 0) {
-					if (wait_op == 0) {
-						SuspendPm4();
-					} else {
-						m_predicate_skip = false;
-					}
-					return;
-				}
 				value += end - begin;
 			}
 		} break;
@@ -1333,17 +1355,10 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 				            "always visible; GPU usage may be higher and FPS may be lower.\n");
 			});
 
-			// Until host occlusion queries are implemented, publish an always-visible result. The
-			// PS5 layout contains one interleaved begin/end pair per DB, and bit 63 marks a result
-			// ready.
-			constexpr uint64_t ready_bit    = 1ull << 63u;
-			constexpr uint64_t counter_mask = ready_bit - 1u;
-			auto*              results      = reinterpret_cast<volatile uint64_t*>(event_address);
-			const auto         value        = ready_bit | m_synthetic_occlusion_counter;
-			for (uint32_t db = 0; db < 16u; db++) {
-				results[db * 2u] = value;
-			}
-			m_synthetic_occlusion_counter = (m_synthetic_occlusion_counter + 1u) & counter_mask;
+			// Until host occlusion queries are implemented, publish an always-visible result.
+			// Both begin and end halves must be marked ready and the per-DB sample count
+			// (end - begin) must be non-zero: games cull geometry when the count reads zero.
+			PublishSyntheticOcclusion(reinterpret_cast<volatile uint64_t*>(event_address));
 			break;
 		}
 		default:

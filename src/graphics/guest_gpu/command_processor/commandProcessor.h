@@ -136,6 +136,7 @@ public:
 	             uint8_t wait_for_previous, uint8_t write_confirm, uint8_t block_engine);
 	void SetPredication(uint32_t condition, uint32_t op, uint32_t wait_op,
 	                    const volatile void* address, uint32_t count_in_dwords);
+	void PublishSyntheticOcclusion(volatile uint64_t* results);
 	[[nodiscard]] bool ShouldSkipPredicatedPackets() const { return m_predicate_skip; }
 
 	Pm4ProcessResult Process(Pm4Execution& execution, std::span<const uint32_t> commands);

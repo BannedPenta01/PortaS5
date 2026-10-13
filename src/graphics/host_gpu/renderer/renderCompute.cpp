@@ -223,7 +223,7 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 			size *= count;
 		}
 	}
-	bindings.shared_memory = {storage.Handle(), 0, size};
+	bindings.shared_memory = vk::DescriptorBufferInfo {storage.Handle(), 0, size};
 }
 
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,

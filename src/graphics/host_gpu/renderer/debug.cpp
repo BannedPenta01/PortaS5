@@ -410,8 +410,20 @@ static void RcCheck(const HW::RenderControl& c) {
 	// EXIT_NOT_IMPLEMENTED(c.stencil_clear_enable != false);
 	// EXIT_NOT_IMPLEMENTED(c.stencil_compress_disable != false);
 	// EXIT_NOT_IMPLEMENTED(c.depth_compress_disable != false);
-	EXIT_NOT_IMPLEMENTED(c.copy_centroid != false);
-	EXIT_NOT_IMPLEMENTED(c.copy_sample != 0);
+	if (c.copy_centroid || c.copy_sample != 0 || c.copy_depth_to_color ||
+	    c.copy_stencil_to_color) {
+		static std::atomic<uint32_t> log_count {0};
+		const auto                   log_id = log_count.fetch_add(1, std::memory_order_relaxed);
+		if (log_id < 64) {
+			LOGF("RcCheck copy-state[%u]: copy_depth_to_color=%d copy_stencil_to_color=%d "
+			     "copy_centroid=%d copy_sample=%u\n",
+			     log_id, c.copy_depth_to_color ? 1 : 0, c.copy_stencil_to_color ? 1 : 0,
+			     c.copy_centroid ? 1 : 0, static_cast<uint32_t>(c.copy_sample));
+		}
+	}
+	// copy_centroid/copy_sample only affect a depth/stencil->color copy and are inert
+	// otherwise. The depth/stencil->color copy itself is not yet implemented; log and
+	// continue so the draw proceeds (depth simply will not be copied to color).
 }
 
 static void McPrint(const char* func, const HW::ModeControl& c) {

@@ -350,13 +350,13 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, vk::CommandBuf
 		const auto final_scissor =
 		    calc_final_scissor(vp, ctx.GetScanModeControl(), framebuffer_extent, i);
 		auto& scissor  = scissors[i];
-		scissor.offset = {final_scissor.left, final_scissor.top};
-		scissor.extent = {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
-		                  static_cast<uint32_t>(final_scissor.bottom - final_scissor.top)};
+		scissor.offset = vk::Offset2D {final_scissor.left, final_scissor.top};
+		scissor.extent = vk::Extent2D {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
+		                               static_cast<uint32_t>(final_scissor.bottom - final_scissor.top)};
 		if (viewport.width == 0.0f) {
 			// Keep empty slots at their guest index; Vulkan requires a positive viewport width.
 			viewport.width = 1.0f;
-			scissor.extent = {0, 0};
+			scissor.extent = vk::Extent2D {0, 0};
 		}
 	}
 	vk_buffer.setViewportWithCount(viewport_count, viewports.data());
@@ -928,6 +928,34 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		LogDrawPhase(draw.Name(), "ResolveRenderDepthTarget");
 	}
 	ResolveRenderDepthTarget(buffer, state.depth_info);
+
+	// Vulkan requires every attachment in a rendering pass to share a single sample
+	// count. The guest can bind a depth buffer whose sample count differs from the
+	// color targets (a stale or read-only depth binding left over from another pass).
+	// Real hardware would reject such a draw, so the mismatched depth is not doing
+	// meaningful work here. Drop it so the pipeline and the rendering pass agree;
+	// color output is kept because every bound color slot has an active write mask.
+	if (state.color_count > 0 && state.depth_info.image_id) {
+		const uint32_t color_samples = state.color_info[0].desc.info.samples;
+		const uint32_t depth_samples = state.depth_info.desc.info.samples;
+		if (color_samples != 0 && depth_samples != 0 && color_samples != depth_samples) {
+			static std::atomic<uint32_t> log_count {0};
+			const auto log_id = log_count.fetch_add(1, std::memory_order_relaxed);
+			if (log_id < 16) {
+				const auto& hw = buffer.GetRegisters();
+				const auto& dc = hw.GetDepthControl();
+				const auto& rc = hw.GetRenderControl();
+				LOGF(
+				    "DepthSampleMismatch[%u]: dropping depth attachment color_samples=%u "
+				    "depth_samples=%u z_enable=%u z_write=%u depth_clear=%u stencil_enable=%u "
+				    "depth_test=%u\n",
+				    log_id, color_samples, depth_samples, dc.z_enable ? 1 : 0,
+				    dc.z_write_enable ? 1 : 0, rc.depth_clear_enable ? 1 : 0,
+				    dc.stencil_enable ? 1 : 0, state.depth_info.depth_test_enable ? 1 : 0);
+			}
+			state.depth_info = {};
+		}
+	}
 
 	if (state.color_count == 0 && !state.depth_info.image_id && !state.ps_active) {
 		LogFramebufferSkip(draw.Name(), state.color_info[0], state.depth_info, buffer,

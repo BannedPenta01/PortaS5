@@ -1193,7 +1193,7 @@ void TestNormalizedImageContracts() {
   container.pixel_format = vk::Format::eR8G8B8A8Unorm;
   container.guest_format = Prospero::BufferFormat::k8_8_8_8UNorm;
   container.type = Prospero::ImageType::kColor2D;
-  container.extent = {256, 256, 1};
+  container.extent = vk::Extent3D {256, 256, 1};
   container.resources = {9, 100};
   container.pitch = 256;
   container.bytes_per_block = 4;
@@ -1223,7 +1223,7 @@ void TestNormalizedImageContracts() {
 
   auto smaller = subresource;
   smaller.data = {0x241747000, 0x10000};
-  smaller.extent = {128, 128, 1};
+  smaller.extent = vk::Extent3D {128, 128, 1};
   smaller.pitch = 128;
   smaller.mip_layout[0] = {0, 0x10000, 128, 128};
   Check(smaller.MipOf(container) == 1 && smaller.SliceOf(container, 1) == 0,
@@ -1253,7 +1253,7 @@ void TestNormalizedImageContracts() {
 
   auto small_atlas = container;
   small_atlas.data = {0x239001000, 0x64000};
-  small_atlas.extent = {32, 32, 1};
+  small_atlas.extent = vk::Extent3D {32, 32, 1};
   small_atlas.pitch = 32;
   small_atlas.resources = {6, 50};
   small_atlas.mip_layout[0] = {0x1000, 0x32000, 32, 32};
@@ -1262,7 +1262,7 @@ void TestNormalizedImageContracts() {
   }
   auto small_child = subresource;
   small_child.data = {0x23900e000, 0x1000};
-  small_child.extent = {32, 32, 1};
+  small_child.extent = vk::Extent3D {32, 32, 1};
   small_child.pitch = 32;
   small_child.mip_layout[0] = {0, 0x1000, 32, 32};
   Check(small_child.MipOf(small_atlas) == 0 &&

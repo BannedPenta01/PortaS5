@@ -194,6 +194,19 @@ constexpr MimgGatherInfo MIMG_GATHER_OPCODE_LIST[] = {
     {0x5fu, Opcode::IMAGE_GATHER4_C_LZ_O,
      ImageSampleFlagCompare | ImageSampleFlagLevelZero | ImageSampleFlagOffset},
     {0x61u, Opcode::IMAGE_GATHER4H, ImageSampleFlagGatherHorizontal},
+    {0xc4u, Opcode::IMAGE_GATHER4_L, ImageSampleFlagLod | ImageSampleFlagAdjust},
+    {0xc7u, Opcode::IMAGE_GATHER4_LZ, ImageSampleFlagLevelZero | ImageSampleFlagAdjust},
+    {0xc8u, Opcode::IMAGE_GATHER4_C, ImageSampleFlagCompare | ImageSampleFlagAdjust},
+    {0xcfu, Opcode::IMAGE_GATHER4_C_LZ,
+     ImageSampleFlagCompare | ImageSampleFlagLevelZero | ImageSampleFlagAdjust},
+    {0xd7u, Opcode::IMAGE_GATHER4_LZ_O,
+     ImageSampleFlagLevelZero | ImageSampleFlagOffset | ImageSampleFlagAdjust},
+    {0xd8u, Opcode::IMAGE_GATHER4_C_O,
+     ImageSampleFlagCompare | ImageSampleFlagOffset | ImageSampleFlagAdjust},
+    {0xdfu, Opcode::IMAGE_GATHER4_C_LZ_O,
+     ImageSampleFlagCompare | ImageSampleFlagLevelZero | ImageSampleFlagOffset |
+         ImageSampleFlagAdjust},
+    {0xe1u, Opcode::IMAGE_GATHER4H, ImageSampleFlagGatherHorizontal | ImageSampleFlagAdjust},
 };
 
 constexpr MimgAtomicInfo MIMG_ATOMIC_OPCODE_LIST[] = {

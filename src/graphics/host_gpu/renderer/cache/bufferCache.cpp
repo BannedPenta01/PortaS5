@@ -420,11 +420,20 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 		return nullptr;
 	}
 
+	// The guest source range can contain pages whose guest mapping is PROT_NONE (a GPU
+	// read watcher) or that are sparse. Read through the backing-store alias, which reads
+	// the same physical pages without touching the guest mapping or the GPU command stream.
+	const auto read_guest = [](uint64_t address, void* dst, uint64_t size) {
+		if (!Libs::LibKernel::Memory::TryReadBacking(address, dst, size)) {
+			std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+		}
+	};
+
 	auto [mapped, base_offset] = m_staging_buffer.Map(total_size, 4);
 	if (mapped != nullptr) {
 		for (auto& copy: copies) {
 			const auto address = buffer.CpuAddress() + copy.dstOffset;
-			std::memcpy(mapped + copy.srcOffset, reinterpret_cast<const void*>(address), copy.size);
+			read_guest(address, mapped + copy.srcOffset, copy.size);
 			copy.srcOffset += base_offset;
 		}
 		m_staging_buffer.Commit();
@@ -435,8 +444,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	                                         vk::BufferUsageFlagBits::eTransferSrc, total_size);
 	for (const auto& copy: copies) {
 		const auto address = buffer.CpuAddress() + copy.dstOffset;
-		std::memcpy(temporary->Mapped().data() + copy.srcOffset,
-		            reinterpret_cast<const void*>(address), copy.size);
+		read_guest(address, temporary->Mapped().data() + copy.srcOffset, copy.size);
 	}
 	temporary->Flush(0, total_size);
 	const auto handle = temporary->Handle();

@@ -153,6 +153,10 @@ struct Ngs2CustomSamplerRackOption {
 };
 
 union Ngs2RackOptionUnion {
+	// The members below have non-trivial constexpr default constructors
+	// (default member initializers), so the union needs a user-provided
+	// constructor for GCC.
+	constexpr Ngs2RackOptionUnion(): common() {}
 	Ngs2RackOption                common;
 	Ngs2SamplerRackOption         sampler;
 	Ngs2MasteringRackOption       mastering;

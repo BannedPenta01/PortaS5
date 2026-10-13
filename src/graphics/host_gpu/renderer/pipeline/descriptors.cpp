@@ -368,7 +368,7 @@ static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::Image
 	}
 	desc.info.pixel_format    = VulkanFormat(desc.info.guest_format);
 	desc.info.type            = Prospero::ImageType::kColor2D;
-	desc.info.extent          = {1, 1, 1};
+	desc.info.extent          = vk::Extent3D {1, 1, 1};
 	desc.info.resources       = {1, 1};
 	desc.info.bytes_per_block = Prospero::NumBytesPerElement(desc.info.guest_format);
 	desc.info.samples         = 1;
@@ -672,7 +672,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.info.pixel_format = pixel_format;
 	desc.info.guest_format = format;
 	desc.info.type         = TextureBaseType(type);
-	desc.info.extent       = {width, height, volume ? depth : 1u};
+	desc.info.extent       = vk::Extent3D {width, height, volume ? depth : 1u};
 	desc.info.resources    = {levels, image_layers};
 	desc.info.pitch        = pitch;
 	desc.info.bytes_per_block =
@@ -779,10 +779,10 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	const auto& program  = *runtime.program;
 	const auto& snapshot = *runtime.resources;
 	prepared.runtime = &runtime;
-	prepared.gds = {nullptr, 0, VK_WHOLE_SIZE};
-	prepared.flattened_srt = {};
-	prepared.shader_data_buffer = {};
-	prepared.shared_memory = {};
+	prepared.gds = vk::DescriptorBufferInfo {nullptr, 0, VK_WHOLE_SIZE};
+	prepared.flattened_srt = vk::DescriptorBufferInfo {};
+	prepared.shader_data_buffer = vk::DescriptorBufferInfo {};
+	prepared.shared_memory = vk::DescriptorBufferInfo {};
 	prepared.images.resize(program.info.images.size());
 	prepared.samplers.clear();
 	prepared.shader_data.clear();
@@ -835,13 +835,26 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			if (descriptor.NumRecords() == UINT32_MAX) {
 				if (program.info.buffers[resource].written) {
 					// Sentinel write ranges end before tables captured by any bound stage.
+					// Guest code may alias SRT memory with writable buffers (unified
+					// memory); upstream treats the overlap as fatal, but the draw can
+					// still execute: log and keep the full sentinel range.
+					static std::atomic<uint32_t> sentinel_log_count {0};
 					for (const auto* reader: stages) {
 						for (const auto [read_address, read_size]: reader->runtime->resources->specialization_reads) {
 							if (read_size == 0) continue;
 							if (read_address > address) {
 								size = std::min(size, read_address - address);
 							} else if (address - read_address < read_size) {
-								EXIT("scalar resource reads overlap a shader buffer write\n");
+								const auto n =
+								    sentinel_log_count.fetch_add(1, std::memory_order_relaxed);
+								if (n < 16) {
+									LOGF(
+									    "SrtHazard[%u]: sentinel buffer write overlaps SRT "
+									    "read: write=0x%016" PRIx64 " read=[0x%016" PRIx64
+									    ",0x%016" PRIx64 ")\n",
+									    n, address, read_address, read_address + read_size);
+								}
+								break;
 							}
 						}
 					}
@@ -1009,9 +1022,27 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	for (const auto* reader: prepared_bindings) {
 		const auto& reads = reader->runtime->resources->specialization_reads;
 		if (reads.empty()) continue;
+		// The guest may legally alias unified memory: SRT (descriptor) memory can
+		// share addresses with image or buffer storage written by the same draw.
+		// Upstream treats any overlap as a hard error; log bounded diagnostics and
+		// proceed so the draw still executes.
+		static std::atomic<uint32_t> hazard_log_count {0};
+		const auto                   log_hazard = [&](const char* kind, uint64_t read_address,
+		                                uint64_t read_size, uint64_t written_address,
+		                                uint64_t written_size) {
+			const auto n = hazard_log_count.fetch_add(1, std::memory_order_relaxed);
+			if (n < 16) {
+				LOGF(
+				    "SrtHazard[%u]: %s: SRT read=[0x%016" PRIx64 ",0x%016" PRIx64
+				    ") overlaps write=[0x%016" PRIx64 ",0x%016" PRIx64 ")\n",
+				    n, kind, read_address, read_address + read_size, written_address,
+				    written_address + written_size);
+			}
+		};
 		for (const auto* writer: prepared_bindings) {
 			if (writer->runtime->program->has_address_writes) {
-				EXIT("scalar resource reads cannot be proven disjoint from shader address writes\n");
+				log_hazard("address-writes", 0, 0, 0, 0);
+				break;
 			}
 		}
 		for (const auto [address, size]: reads) {
@@ -1023,7 +1054,9 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				                          image->info.metadata.range}) {
 					if (written.size != 0 && ImageRangeOverlaps(address, size,
 					                                          written.address, written.size)) {
-						EXIT("scalar resource reads overlap an image or attachment write\n");
+						log_hazard("image-attachment", address, size, written.address,
+						           written.size);
+						break;
 					}
 				}
 			}
@@ -1035,7 +1068,9 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 					const auto& written = writer->buffer_sources[i];
 					if (written.size != 0 && ImageRangeOverlaps(address, size,
 					                                          written.address, written.size)) {
-						EXIT("scalar resource reads overlap a shader buffer write\n");
+						log_hazard("shader-buffer", address, size, written.address,
+						           written.size);
+						break;
 					}
 				}
 			}

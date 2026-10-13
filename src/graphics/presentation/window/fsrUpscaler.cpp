@@ -178,7 +178,7 @@ bool FsrUpscaler::Prepare(GraphicContext& graphics, vk::Extent2D target_extent,
 	vk::ImageCreateInfo create {};
 	create.sType         = vk::StructureType::eImageCreateInfo;
 	create.imageType     = vk::ImageType::e2D;
-	create.extent        = {target_extent.width, target_extent.height, 1};
+	create.extent        = vk::Extent3D {target_extent.width, target_extent.height, 1};
 	create.mipLevels     = 1;
 	create.arrayLayers   = 1;
 	create.format        = target_format;

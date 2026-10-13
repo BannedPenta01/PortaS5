@@ -3732,6 +3732,11 @@ void GraphicsInitJmpTablesShIndirect() {
 		cp.GetShCtx().SetLsShaderBase(base);
 	};
 
+	// LS shader resource descriptors (VGPR counts, float mode, etc.). The recompiler reads
+	// the shader binary directly and does not consume these, so accept and discard them.
+	g_hw_sh_indirect_func[0x14A] = [](KYTY_HW_SH_INDIRECT_ARGS) {};
+	g_hw_sh_indirect_func[0x14B] = [](KYTY_HW_SH_INDIRECT_ARGS) {};
+
 	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_LO_ES] = [](KYTY_HW_SH_INDIRECT_ARGS) {
 		auto base = cp.GetShCtx().GetVs().es_regs.data_addr;
 		base &= 0xFFFFFF00000000FFull;

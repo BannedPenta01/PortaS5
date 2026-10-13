@@ -35,7 +35,14 @@ execute_process(
 	COMMAND git rev-parse --short=12 HEAD
 	WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 	OUTPUT_VARIABLE FFMPEG_GIT_SHA
-	OUTPUT_STRIP_TRAILING_WHITESPACE)
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+	ERROR_QUIET)
+
+# Source tarballs carry no .git metadata, so fall back to the newest published
+# prebuilt release tag instead of producing a broken download URL.
+if(NOT FFMPEG_GIT_SHA)
+	set(FFMPEG_GIT_SHA "9ac4cfd195f1")
+endif()
 
 # An existing package can be tested before publishing it.
 set(FFMPEG_PREBUILT_DIR "" CACHE PATH "Directory containing an unpacked FFmpeg package")

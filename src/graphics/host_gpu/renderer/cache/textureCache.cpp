@@ -120,7 +120,7 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 		copy.bufferRowLength   = info.pitch;
 		copy.bufferImageHeight = info.extent.height;
 		copy.imageSubresource  = {aspect, 0, layer, 1};
-		copy.imageExtent       = {info.extent.width, info.extent.height, 1};
+		copy.imageExtent       = vk::Extent3D {info.extent.width, info.extent.height, 1};
 	}
 	return copies;
 }
@@ -495,7 +495,7 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	info.pixel_format    = desc.info.pixel_format;
 	info.guest_format    = desc.info.guest_format;
 	info.type            = Prospero::ImageType::kColor2D;
-	info.extent          = {1, 1, 1};
+	info.extent          = vk::Extent3D {1, 1, 1};
 	info.resources       = {1, 1};
 	info.pitch           = 1;
 	info.bytes_per_block = std::max(desc.info.bytes_per_block, 1u);
@@ -1645,7 +1645,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		attachment.storeOp     = vk::AttachmentStoreOp::eStore;
 		attachment.clearValue  = clear;
 		vk::RenderingInfo rendering {};
-		rendering.renderArea.extent = {
+		rendering.renderArea.extent = vk::Extent2D {
 		    std::max(image.info.extent.width >> range.baseMipLevel, 1u),
 		    std::max(image.info.extent.height >> range.baseMipLevel, 1u)};
 		rendering.layerCount           = range.layerCount;

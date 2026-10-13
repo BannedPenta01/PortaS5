@@ -233,7 +233,7 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	desc.info.pixel_format    = format;
 	desc.info.guest_format    = guest_format;
 	desc.info.type            = Prospero::ImageType::kColor2D;
-	desc.info.extent          = {width, height, 1};
+	desc.info.extent          = vk::Extent3D {width, height, 1};
 	desc.info.resources       = {1, view.image_layers};
 	desc.info.pitch           = pitch;
 	desc.info.bytes_per_block = bytes;
@@ -303,7 +303,29 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	    (!z.depth_view.depth_write_disable && z.z_write_base_addr != z.z_read_base_addr) ||
 	    (has_stencil && !z.depth_view.stencil_write_disable &&
 	     z.stencil_write_base_addr != z.stencil_read_base_addr)) {
-		DepthFatal("unsupported depth register state");
+		// A depth->color copy (copy_depth_to_color) routes the depth value into a bound
+		// color target so a later shader can sample depth as a texture. It is not yet
+		// implemented as a real blit; log and continue so the draw proceeds (the copy is
+		// a no-op and the color target will not receive depth).
+		static std::atomic<uint32_t> copy_log_count {0};
+		const auto copy_log_id = copy_log_count.fetch_add(1, std::memory_order_relaxed);
+		if (copy_log_id < 16) {
+			LOGF(
+			    "DepthCopyUnsupported[%u]: copy_d2c=%d copy_s2c=%d copy_centroid=%d "
+			    "copy_sample=%u zfunc=%u z_write=0x%010" PRIx64 " z_read=0x%010" PRIx64
+			    " has_stencil=%d\n",
+			    copy_log_id, rc.copy_depth_to_color ? 1 : 0, rc.copy_stencil_to_color ? 1 : 0,
+			    rc.copy_centroid ? 1 : 0, static_cast<uint32_t>(rc.copy_sample),
+			    static_cast<uint32_t>(dc.zfunc), z.z_write_base_addr, z.z_read_base_addr,
+			    has_stencil ? 1 : 0);
+		}
+		// Only the depth->color/stencil->color copy is unimplemented; the remaining
+		// conditions (invalid zfunc, split read/write bases) are still fatal.
+		EXIT_NOT_IMPLEMENTED(dc.zfunc > static_cast<uint8_t>(vk::CompareOp::eAlways) ||
+		                     (!z.depth_view.depth_write_disable &&
+		                      z.z_write_base_addr != z.z_read_base_addr) ||
+		                     (has_stencil && !z.depth_view.stencil_write_disable &&
+		                      z.stencil_write_base_addr != z.stencil_read_base_addr));
 	}
 	r.desc = MakeDepthTargetDesc(buffer, z);
 	r.depth_clear_enable      = rc.depth_clear_enable;

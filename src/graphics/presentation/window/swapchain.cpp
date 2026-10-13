@@ -13,6 +13,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/presentation/window/fsrUpscaler.h"
 #include "graphics/presentation/window/windowInternal.h"
 
@@ -20,11 +21,21 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <vector>
 #include <vulkan/vk_platform.h>
+
+// Guest-frame readback for diagnostics (KYTY_DUMP_FRAME): downloads the frame
+// that is about to be presented and writes PNGs, so rendering issues can be
+// inspected without a compositor-visible window.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_STATIC
+#define STBIWDEF static inline
+#include "stb_image_write.h"
 
 // IWYU pragma: no_include <intrin.h>
 
@@ -181,7 +192,7 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 	vk::ImageCreateInfo create {};
 	create.sType         = vk::StructureType::eImageCreateInfo;
 	create.imageType     = vk::ImageType::e2D;
-	create.extent        = {extent.width, extent.height, 1};
+	create.extent        = vk::Extent3D {extent.width, extent.height, 1};
 	create.mipLevels     = 1;
 	create.arrayLayers   = 1;
 	create.format        = format;
@@ -241,8 +252,8 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 	vk::ImageCopy copy {};
 	copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, source.backing.layers};
 	copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, image.layers};
-	copy.extent         = {std::min(source.backing.extent.width, image.extent.width),
-	                       std::min(source.backing.extent.height, image.extent.height), 1};
+	copy.extent         = vk::Extent3D {std::min(source.backing.extent.width, image.extent.width),
+	                                    std::min(source.backing.extent.height, image.extent.height), 1};
 	EXIT_IF(copy.srcSubresource.layerCount != copy.dstSubresource.layerCount);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
 	                  vk::ImageLayout::eTransferDstOptimal, copy);
@@ -343,6 +354,11 @@ struct Presenter::Impl {
 	}
 	void Present();
 
+	// KYTY_DUMP_FRAME: download the guest frame that is about to be presented and
+	// write it as PNG (interval in presents from the env value, default 60).
+	void RecordFrameDump(CommandBuffer& command, Presenter::Frame* frame);
+	void FinishFrameDump(uint64_t tick);
+
 	RenderContext&        renderer;
 	WindowContext&        window;
 	Swapchain             swapchain;
@@ -351,6 +367,18 @@ struct Presenter::Impl {
 	Common::Mutex         present_mutex;
 	std::array<Layer, 2>  layers {};
 	std::atomic<uint64_t> presented_overlay_revision {0};
+
+	std::unique_ptr<Buffer>            dump_buffer;
+	uint32_t                           dump_width    = 0;
+	uint32_t                           dump_height   = 0;
+	uint64_t                           dump_size     = 0;
+	uint32_t                           dump_interval = 0;
+	uint32_t                           dump_count    = 0;
+	uint32_t                           dump_serial   = 0;
+	bool                               dump_pending  = false;
+	uint64_t                           dump_tick     = 0;
+	vk::Format                         dump_format   = vk::Format::eUndefined;
+	std::vector<uint8_t>               dump_pixels;
 };
 
 void Swapchain::Create() {
@@ -362,7 +390,7 @@ void Swapchain::Create() {
 	// during creation, the next presentation will detect the newer size.
 	{
 		Common::LockGuard lock(m_window.mutex);
-		m_window_extent = {graphics.screen_width, graphics.screen_height};
+		m_window_extent = vk::Extent2D {graphics.screen_width, graphics.screen_height};
 	}
 	EXIT_IF(m_window_extent.width == 0);
 	EXIT_IF(m_window_extent.height == 0);
@@ -465,7 +493,7 @@ void Swapchain::Create() {
 		view.image                           = m_images[i];
 		view.viewType                        = vk::ImageViewType::e2D;
 		view.format                          = m_format;
-		view.components                      = {};
+		view.components                      = vk::ComponentMapping {};
 		view.subresourceRange.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		view.subresourceRange.baseArrayLayer = 0;
 		view.subresourceRange.baseMipLevel   = 0;
@@ -541,8 +569,8 @@ void Swapchain::Destroy() {
 
 	m_handle        = nullptr;
 	m_format        = vk::Format::eUndefined;
-	m_extent        = {};
-	m_window_extent = {};
+	m_extent        = vk::Extent2D {};
+	m_window_extent = vk::Extent2D {};
 	m_image_index   = static_cast<uint32_t>(-1);
 	m_frame_index   = 0;
 	m_images.clear();
@@ -1085,6 +1113,105 @@ void Presenter::ClearLayer(int bus) {
 	}
 }
 
+void Presenter::Impl::RecordFrameDump(CommandBuffer& command, Presenter::Frame* frame) {
+	if (frame == nullptr) {
+		return;
+	}
+	if (dump_interval == 0) {
+		static int parsed = [] {
+			const char* env = ::std::getenv("KYTY_DUMP_FRAME");
+			if (env == nullptr) {
+				return -1;
+			}
+			const int value = ::std::atoi(env);
+			return value > 0 ? value : 60;
+		}();
+		if (parsed < 0) {
+			dump_interval = UINT32_MAX; // disabled
+			return;
+		}
+		dump_interval = static_cast<uint32_t>(parsed);
+	}
+	if (dump_interval == UINT32_MAX || (dump_count++ % dump_interval) != 0 || dump_serial >= 64) {
+		return;
+	}
+	auto& image = frame->image;
+	if (image.image == nullptr || image.extent.width == 0 || image.extent.height == 0) {
+		return;
+	}
+	const bool supported = image.format == vk::Format::eR8G8B8A8Unorm ||
+	                       image.format == vk::Format::eB8G8R8A8Unorm ||
+	                       image.format == vk::Format::eA2R10G10B10UnormPack32;
+	if (!supported) {
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			LOGF("KYTY_DUMP_FRAME: unsupported frame format %d\n",
+			     static_cast<int>(image.format));
+		}
+		return;
+	}
+	const uint64_t size =
+	    static_cast<uint64_t>(image.extent.width) * image.extent.height * 4ull;
+	if (dump_buffer == nullptr || dump_size < size) {
+		dump_buffer = std::make_unique<Buffer>(window.graphic_ctx, present_scheduler,
+		                                       MemoryUsage::Download, 0,
+		                                       vk::BufferUsageFlagBits::eTransferDst, size);
+		dump_size   = size;
+	}
+	dump_width  = image.extent.width;
+	dump_height = image.extent.height;
+	dump_format = image.format;
+	frame->Transit(command.Handle(), vk::ImageLayout::eTransferSrcOptimal,
+	               vk::AccessFlagBits2::eTransferRead);
+	vk::BufferImageCopy copy {};
+	copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+	copy.imageExtent      = vk::Extent3D {dump_width, dump_height, 1};
+	command.Handle().copyImageToBuffer(image.image, vk::ImageLayout::eTransferSrcOptimal,
+	                                   dump_buffer->Handle(), 1, &copy);
+	dump_pending = true;
+}
+
+void Presenter::Impl::FinishFrameDump(uint64_t tick) {
+	if (!dump_pending || dump_buffer == nullptr || dump_width == 0) {
+		return;
+	}
+	dump_pending = false;
+	present_scheduler.Wait(tick);
+	auto mapped = dump_buffer->Mapped();
+	if (!dump_buffer->IsCoherent()) {
+		dump_buffer->Invalidate(0, dump_size);
+	}
+	const size_t pixels = static_cast<size_t>(dump_width) * dump_height;
+	dump_pixels.resize(pixels * 4);
+	if (dump_format == vk::Format::eA2R10G10B10UnormPack32) {
+		const auto* src = reinterpret_cast<const uint32_t*>(mapped.data());
+		for (size_t i = 0; i < pixels; i++) {
+			const uint32_t v = src[i];
+			dump_pixels[i * 4 + 0] = static_cast<uint8_t>(((v >> 20) & 0x3ffu) >> 2);
+			dump_pixels[i * 4 + 1] = static_cast<uint8_t>(((v >> 10) & 0x3ffu) >> 2);
+			dump_pixels[i * 4 + 2] = static_cast<uint8_t>((v & 0x3ffu) >> 2);
+			dump_pixels[i * 4 + 3] = 255;
+		}
+	} else if (dump_format == vk::Format::eB8G8R8A8Unorm) {
+		for (size_t i = 0; i < pixels; i++) {
+			dump_pixels[i * 4 + 0] = mapped[i * 4 + 2];
+			dump_pixels[i * 4 + 1] = mapped[i * 4 + 1];
+			dump_pixels[i * 4 + 2] = mapped[i * 4 + 0];
+			dump_pixels[i * 4 + 3] = mapped[i * 4 + 3];
+		}
+	} else {
+		::std::memcpy(dump_pixels.data(), mapped.data(), pixels * 4);
+	}
+	char path[128];
+	::std::snprintf(path, sizeof(path), "frame_%03u.png", dump_serial++);
+	if (stbi_write_png(path, static_cast<int>(dump_width), static_cast<int>(dump_height), 4,
+	                   dump_pixels.data(), static_cast<int>(dump_width) * 4) != 0) {
+		LOGF("KYTY_DUMP_FRAME: wrote %s (%ux%u fmt=%d)\n", path, dump_width, dump_height,
+		     static_cast<int>(dump_format));
+	}
+}
+
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
 
@@ -1106,18 +1233,22 @@ void Presenter::Impl::Present() {
 			    overlay_visual.active && swapchain.PrepareSystemOverlay();
 			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 			                                draw_system_overlay);
+			RecordFrameDump(command, layers[0].frame);
 			const auto tick = swapchain.Submit(present_scheduler);
 			for (const auto& layer: layers) {
 				if (layer.frame != nullptr) {
 					layer.frame->present_tick = tick;
 				}
 			}
+			dump_tick = tick;
 		}
 		status = swapchain.Present();
 		if (status != Swapchain::Status::Success) {
 			RecoverSwapchain(status);
 			continue;
 		}
+
+		FinishFrameDump(dump_tick);
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
 		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);

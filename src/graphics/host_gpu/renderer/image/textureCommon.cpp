@@ -258,7 +258,7 @@ std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayo
 		const auto          mip_depth = GetTextureLevelDepth(depth, mip_level, volume_texture);
 		vk::BufferImageCopy region {};
 		region.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip_level, 0, 1};
-		region.imageExtent      = {mip_width, mip_height, 1};
+		region.imageExtent      = vk::Extent3D {mip_width, mip_height, 1};
 		if (linear_texture) {
 			region.bufferRowLength   = layout.mips[mip_level].row_length;
 			region.bufferImageHeight = layout.mips[mip_level].image_height;
